@@ -1,0 +1,425 @@
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const http = require('http');
+const { Server } = require('socket.io');
+const path = require('path');
+const jwt = require('jsonwebtoken');
+const dns = require('node:dns');
+const config = require('./src/config');
+
+// Import routes
+const reviewsRouter = require('./src/routes/simple-reviews');
+const productsRouter = require('./src/routes/simple-products');
+const categoriesRouter = require('./src/routes/simple-categories');
+const subCategoriesRouter = require('./src/routes/simple-subcategories');
+const bannersRouter = require('./src/routes/simple-banners');
+const uploadRouter = require('./src/routes/simple-upload');
+const adminProductsRouter = require('./src/routes/admin-products');
+const adminCategoriesRouter = require('./src/routes/admin-categories');
+const adminBannersRouter = require('./src/routes/admin-banners');
+const adminDashboardRouter = require('./src/routes/admin-dashboard');
+const adminUsersRouter = require('./src/routes/admin-users');
+const authRouter = require('./src/routes/auth');
+const adminAuthRouter = require('./src/routes/adminAuth');
+const userAuthRouter = require('./src/routes/userAuth');
+const wishlistRouter = require('./src/routes/wishlist');
+const cartRouter = require('./src/routes/cart');
+const paymentsRouter = require('./src/routes/payments');
+const ordersRouter = require('./src/routes/simple-orders');
+const productDetailsRouter = require('./src/routes/product-details');
+const adminReviewsRouter = require('./src/routes/admin-reviews');
+const adminContentSettingsRouter = require('./src/routes/admin-content-settings');
+const contentSettingsRouter = require('./src/routes/content-settings');
+const sizeGuidesRouter = require('./src/routes/size-guides');
+const shiprocketWebhookRouter = require('./src/routes/shiprocket-webhook');
+const adminOverridesRouter = require('./src/routes/adminOverrides');
+const aiRouter = require('./src/routes/aiRoutes');
+const notificationsRouter = require('./src/routes/notifications');
+const shiprocketDataRouter = require('./src/routes/shiprocketData');
+const shiprocketSyncRouter = require('./src/routes/shiprocketSync');
+const feedRouter = require('./src/routes/feed');
+const metaCapiRouter = require('./src/routes/metaCapiSdk.routes');
+const adminCampaignsRouter = require('./src/routes/admin-campaigns');
+const adminMetaConfigRouter = require('./src/routes/admin-meta-config');
+const adminEventLogsRouter = require('./src/routes/admin-event-logs');
+
+// Initialize scheduled services
+require('./src/services/shiprocketSync');
+
+const { AdminModel } = require('./src/models/admin');
+const { UserModel } = require('./src/models/user');
+
+// Startup validation: fail fast with a clear message instead of failing
+// later with confusing runtime errors (see #35 in the production audit).
+if (!config.mongoUri) {
+  console.error(
+    '\n❌ Missing MONGODB_URI.\n' +
+      '   Create a .env file (copy from .env.example) and set MONGODB_URI.\n',
+  );
+  process.exit(1);
+}
+
+if (!config.isJwtSecretSecure) {
+  console.error(
+    '\n❌ JWT_SECRET is missing or set to a known placeholder value.\n' +
+      '   Generate a strong random secret, e.g.:\n' +
+      '   node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"\n' +
+      '   and set JWT_SECRET in your .env file. Do not ship with the default secret.\n',
+  );
+  process.exit(1);
+}
+
+// Validate critical service configurations
+if (config.isProduction) {
+  if (!config.corsOrigins || config.corsOrigins.length === 0) {
+    console.warn(
+      '\n⚠️  WARNING: CORS_ORIGINS not set in production.\n' +
+      '   Set CORS_ORIGINS to your frontend domains to secure your API.\n' +
+      '   Example: CORS_ORIGINS=https://trozzi.in,https://admin.trozzi.in\n',
+    );
+  }
+  
+  if (!config.userFrontendUrl || config.userFrontendUrl.includes('localhost')) {
+    console.warn(
+      '\n⚠️  WARNING: USER_FRONTEND_URL not properly configured for production.\n' +
+      '   Set USER_FRONTEND_URL to your production user frontend URL.\n',
+    );
+  }
+  
+  if (!config.adminFrontendUrl || config.adminFrontendUrl.includes('localhost')) {
+    console.warn(
+      '\n⚠️  WARNING: ADMIN_FRONTEND_URL not properly configured for production.\n' +
+      '   Set ADMIN_FRONTEND_URL to your production admin frontend URL.\n',
+    );
+  }
+}
+
+const app = express();
+const BASE_PORT = config.port;
+
+if (String(process.env.TRUST_PROXY ?? '').toLowerCase() !== 'false') {
+  app.set('trust proxy', 1);
+}
+
+let isDbConnected = false;
+
+mongoose.connection.on('connected', () => {
+  isDbConnected = true;
+});
+
+mongoose.connection.on('disconnected', () => {
+  isDbConnected = false;
+});
+
+mongoose.connection.on('error', () => {
+  isDbConnected = false;
+});
+
+// Rate limiting
+const getRateLimitKey = (req) => {
+  const xff = req.headers['x-forwarded-for'];
+  const first = Array.isArray(xff) ? xff[0] : String(xff || '');
+  const ip = first.split(',')[0].trim();
+  return ip || req.ip;
+};
+
+const publicLimiter = rateLimit({
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS_PUBLIC || 60_000),
+  max: process.env.NODE_ENV === 'production'
+    ? Number(process.env.RATE_LIMIT_MAX_PUBLIC || 600)
+    : Number(process.env.RATE_LIMIT_MAX_DEV || 2000),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: getRateLimitKey,
+  skip: (req) => req.method === 'OPTIONS'
+    || String(req.path || '').startsWith('/socket.io')
+    || String(req.path || '').startsWith('/shipping/webhook/shiprocket'),
+});
+
+const authLimiter = rateLimit({
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS_AUTH || 15 * 60_000),
+  max: process.env.NODE_ENV === 'production'
+    ? Number(process.env.RATE_LIMIT_MAX_AUTH || 30)
+    : Number(process.env.RATE_LIMIT_MAX_DEV || 2000),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: getRateLimitKey,
+  skip: (req) => req.method === 'OPTIONS' || String(req.path || '').startsWith('/ping'),
+});
+
+const adminLimiter = rateLimit({
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS_ADMIN || 60_000),
+  max: process.env.NODE_ENV === 'production'
+    ? Number(process.env.RATE_LIMIT_MAX_ADMIN || 120)
+    : Number(process.env.RATE_LIMIT_MAX_DEV || 2000),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: getRateLimitKey,
+  skip: (req) => req.method === 'OPTIONS',
+});
+
+// Middleware
+app.use(helmet({
+  contentSecurityPolicy: false
+}));
+const corsOptions = {
+  origin: config.corsOriginCallback,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
+app.use('/api/auth', authLimiter);
+app.use('/api/admin', adminLimiter);
+app.use('/api', publicLimiter);
+
+// Shiprocket webhook path (dynamic via env)
+const SHIPROCKET_WEBHOOK_PATH = process.env.SHIPROCKET_WEBHOOK_PATH || '/api/webhooks/shipping';
+
+// Shiprocket webhooks need raw body for signature verification.
+app.use('/api/shipping/webhook/shiprocket', express.raw({ type: 'application/json' }), shiprocketWebhookRouter);
+// New Shiprocket webhook endpoint (required): /api/shiprocket/webhook
+app.use('/api/shiprocket/webhook', express.raw({ type: 'application/json' }), shiprocketWebhookRouter);
+// Dynamic webhook path from env (recommended for production)
+app.use(SHIPROCKET_WEBHOOK_PATH, express.raw({ type: 'application/json' }), shiprocketWebhookRouter);
+// PhonePe webhook needs raw body for signature/authorization verification.
+app.use('/api/payments/webhook/phonepe', express.raw({ type: 'application/json' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use('/api/admin', adminOverridesRouter);
+app.use('/api/admin/ai', aiRouter);
+app.use('/api/orders', ordersRouter);
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
+
+app.use((req, res, next) => {
+  if (req.path === '/api/health') return next();
+  if (req.method === 'OPTIONS') return next();
+  if (isDbConnected) return next();
+  return res.status(503).json({
+    success: false,
+    message: 'Database not connected. Please try again in a moment.',
+  });
+});
+
+// Routes
+app.use('/api/reviews', reviewsRouter);
+app.use('/api/products', productsRouter);
+app.use('/api/categories', categoriesRouter);
+app.use('/api/subcategories', subCategoriesRouter);
+app.use('/api/banners', bannersRouter);
+app.use('/api/upload', uploadRouter);
+app.use('/api/product-details', productDetailsRouter);
+app.use('/api/admin/reviews', adminReviewsRouter);
+app.use('/api/admin/products', adminProductsRouter);
+app.use('/api/admin/categories', adminCategoriesRouter);
+app.use('/api/admin/banners', adminBannersRouter);
+app.use('/api/admin/users', adminUsersRouter);
+app.use('/api/admin/content-settings', adminContentSettingsRouter);
+app.use('/api/admin/campaigns', adminCampaignsRouter);
+app.use('/api/admin/meta-config', adminMetaConfigRouter);
+app.use('/api/admin/event-logs', adminEventLogsRouter);
+app.use('/api/admin', adminDashboardRouter);
+app.use('/api/auth/admin', adminAuthRouter);
+app.use('/api/auth/user', userAuthRouter);
+app.use('/api/auth', authRouter); // Keep for backward compatibility
+app.use('/api/content-settings', contentSettingsRouter);
+app.use('/api/wishlist', wishlistRouter);
+app.use('/api/cart', cartRouter);
+app.use('/api/payments', paymentsRouter);
+app.use('/api/size-guides', sizeGuidesRouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/admin', shiprocketDataRouter);
+app.use('/api/admin', shiprocketSyncRouter);
+app.use('/feed', feedRouter);
+app.use('/api/feed', feedRouter);
+app.use('/api/meta-capi', metaCapiRouter);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({
+    success: true,
+    message: `${config.brandName} Backend API is running`,
+    timestamp: new Date().toISOString(),
+    environment: config.nodeEnv,
+    database: isDbConnected ? 'connected' : 'disconnected',
+  });
+});
+
+// MongoDB connection
+let activePort = BASE_PORT;
+
+const startServer = (port, attempt = 0) => {
+  const httpServer = http.createServer(app);
+
+  const io = new Server(httpServer, {
+    cors: {
+      origin: config.corsOriginCallback,
+      credentials: true,
+      methods: ['GET', 'POST'],
+    },
+  });
+
+  app.set('io', io);
+
+  const JWT_SECRET = config.jwtSecret;
+
+  io.use(async (socket, next) => {
+    try {
+      const token = socket?.handshake?.auth?.token || socket?.handshake?.query?.token;
+      if (!token) return next();
+
+      const decoded = jwt.verify(String(token), JWT_SECRET);
+      const id = decoded && (decoded.id || decoded.userId);
+      const type = decoded && decoded.type;
+
+      if (!id) return next();
+
+      socket.data.auth = { id: String(id), type: String(type || '') };
+      return next();
+    } catch (_e) {
+      return next();
+    }
+  });
+
+  io.on('connection', async (socket) => {
+    try {
+      const auth = socket.data.auth;
+      if (!auth?.id) return;
+
+      if (auth.type === 'admin') {
+        const admin = await AdminModel.findById(auth.id);
+        if (admin && admin.active && admin.role === 'admin') {
+          socket.join('admin');
+        }
+        return;
+      }
+
+      if (auth.type === 'user') {
+        const user = await UserModel.findById(auth.id);
+        if (user && user.active) {
+          socket.join(`user:${String(user._id)}`);
+          socket.join(`user_${String(user._id)}`);
+          const email = String(user.email || '').toLowerCase();
+          if (email) socket.join(`user_email:${email}`);
+        }
+      }
+    } catch (_e) {
+      // ignore
+    }
+  });
+
+  const server = httpServer.listen(port, '0.0.0.0', () => {
+    activePort = port;
+    console.log(`🚀 ${config.brandName} Backend Server running on port ${port}`);
+    console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE') {
+      // Fail fast instead of silently moving to 5001/5002: the frontend/admin
+      // dev proxies are configured for the canonical PORT (5000), so running
+      // on another port would silently break every API call (ECONNREFUSED).
+      console.error(
+        `\n❌ Port ${BASE_PORT} is already in use.\n` +
+          `Stop the process using it or set a different PORT in backend/.env.\n` +
+          `Then restart the backend and the Vite dev servers.\n`,
+      );
+      process.exit(1);
+    }
+
+    console.error('❌ Server error:', err);
+  });
+};
+
+startServer(BASE_PORT);
+
+const mongoUri = config.mongoUri;
+const mongoUriStandard = config.mongoUriStandard;
+
+const dnsServers = String(process.env.DNS_SERVERS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+if (dnsServers.length) {
+  dns.setServers(dnsServers);
+}
+
+const isSrvLookupError = (err) => {
+  const msg = String(err?.message || '');
+  const code = String(err?.code || '');
+  return (
+    msg.includes('querySrv') ||
+    msg.includes('_mongodb._tcp') ||
+    (code === 'ENOTFOUND' && msg.includes('mongodb.net')) ||
+    (code === 'ECONNREFUSED' && msg.includes('_mongodb._tcp'))
+  );
+};
+
+const connectWithRetry = async () => {
+  if (!mongoUri) {
+    console.error('❌ Missing MONGODB_URI. Create a .env file (copy from .env.example) and set MONGODB_URI.');
+    return;
+  }
+
+  try {
+    await mongoose.connect(mongoUri, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    isDbConnected = true;
+    console.log('✅ MongoDB Atlas Connected');
+  } catch (error) {
+    isDbConnected = false;
+    console.error('❌ MongoDB connection error:', error);
+
+    if (mongoUriStandard && isSrvLookupError(error)) {
+      try {
+        console.log('ℹ️ Retrying with MONGODB_URI_STANDARD...');
+        await mongoose.connect(mongoUriStandard, {
+          useNewUrlParser: true,
+          useUnifiedTopology: true,
+        });
+        isDbConnected = true;
+        console.log('✅ MongoDB Connected (standard URI)');
+        return;
+      } catch (error2) {
+        console.error('❌ MongoDB connection error (standard URI):', error2);
+      }
+    }
+
+    console.error('⏳ Retrying MongoDB connection in 5 seconds...');
+    setTimeout(connectWithRetry, 5000);
+  }
+};
+
+connectWithRetry();
+
+// Cron: retry failed Shiprocket shipments every 5 minutes
+const cron = require('node-cron');
+cron.schedule('*/5 * * * *', async () => {
+  if (mongoose.connection.readyState !== 1) return; // DB down — skip quietly
+  try {
+    const { retryFailedShipments } = require('./src/workers/shipmentRetryWorker');
+    await retryFailedShipments();
+  } catch (e) {
+    console.error('Cron retry error:', e);
+  }
+});
+
+// Cron: process approved refunds (due) every 10 minutes
+cron.schedule('*/10 * * * *', async () => {
+  if (mongoose.connection.readyState !== 1) return; // DB down — skip quietly
+  try {
+    const { processDueRefunds } = require('./src/workers/refundWorker');
+    await processDueRefunds();
+  } catch (e) {
+    console.error('Cron refund processing error:', e);
+  }
+});
+
+module.exports = app;
