@@ -9,13 +9,11 @@ const { getOrCreateContentSettings } = require('../models/contentSettings');
 const domainEvents = require('../services/domainEvents');
 const { validateTransition } = require('../middleware/stateMachine');
 const { calculateOrderTotals, roundMoney } = require('../services/shippingCalculator');
+const { resolveAssetUrl } = require('../config/storage');
 
 const router = express.Router();
 
 const JWT_SECRET = require('../config').jwtSecret;
-
-const AWS_REGION = process.env.AWS_REGION;
-const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET;
 
 function normalizeStatus(raw) {
   const base = String(raw ?? '').trim().toLowerCase();
@@ -431,17 +429,7 @@ function emptyStatusCounts() {
 }
 
 function toAbsoluteUrl(req, url) {
-  const value = String(url ?? '').trim();
-  if (!value) return '';
-  if (/^https?:\/\//i.test(value)) return value;
-  if (value.startsWith('/')) {
-    const proto = req.headers['x-forwarded-proto'] || req.protocol;
-    return `${proto}://${req.get('host')}${value}`;
-  }
-  if (/^uploads\//i.test(value) && AWS_REGION && AWS_S3_BUCKET) {
-    return `https://${AWS_S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${value}`;
-  }
-  return value;
+  return resolveAssetUrl(req, url);
 }
 
 async function getProductsByIds(db, ids) {

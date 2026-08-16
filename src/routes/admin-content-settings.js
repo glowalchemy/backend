@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const { authenticateAdmin, requireAdmin } = require('../middleware/adminAuth');
+const { isImageUrl } = require('../config/storage');
 const { ContentSettingsModel, getOrCreateContentSettings, SINGLETON_ID } = require('../models/contentSettings');
 
 function sanitizeString(v, maxLen) {
@@ -37,11 +38,19 @@ router.put('/', authenticateAdmin, requireAdmin, async (req, res) => {
     const update = {};
 
     if (body.brandLogoUrl !== undefined) {
-      update.brandLogoUrl = sanitizeString(body.brandLogoUrl, 2048);
+      const logo = sanitizeString(body.brandLogoUrl, 2048);
+      if (logo && !isImageUrl(logo)) {
+        return res.status(400).json({ success: false, message: 'Brand logo must be an image URL (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico) - no other formats' });
+      }
+      update.brandLogoUrl = logo;
     }
 
     if (body.defaultAvatarUrl !== undefined) {
-      update.defaultAvatarUrl = sanitizeString(body.defaultAvatarUrl, 2048);
+      const avatar = sanitizeString(body.defaultAvatarUrl, 2048);
+      if (avatar && !isImageUrl(avatar)) {
+        return res.status(400).json({ success: false, message: 'Default avatar must be an image URL (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico) - no other formats' });
+      }
+      update.defaultAvatarUrl = avatar;
     }
 
     if (body.bioMaxLength !== undefined) {

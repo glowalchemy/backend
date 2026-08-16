@@ -54,7 +54,9 @@ const ProductSchema = new mongoose.Schema({
     category: { type: String, default: "" },
     description: { type: String, default: "" },
     featured: { type: Boolean, required: true, default: false },
-    createdAt: { type: String, required: true },
+    // Real data stores Date objects (timestamps:true) — declared as Date so
+    // new writes and sorts are type-consistent (was String before).
+    createdAt: { type: Date, required: true },
     sizes: { type: [String], required: true, default: [] },
     colors: { type: [String], required: true, default: [] },
     colorVariants: { type: [ColorVariantSchema], required: true, default: [] },

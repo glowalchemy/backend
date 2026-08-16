@@ -2,15 +2,16 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const crypto = require('crypto');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const Banner = require('../models/banner');
 
 const { authenticateAdmin, requireAdmin } = require('../middleware/adminAuth');
-
-const AWS_REGION = process.env.AWS_REGION;
-const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET;
-
-const s3 = new S3Client({ region: AWS_REGION });
+const {
+    uploadObject,
+    proxyPathFor,
+    resolveAssetUrl,
+    absoluteUrl,
+    isImageUrl,
+} = require('../config/storage');
 
 router.use(authenticateAdmin, requireAdmin);
 
@@ -33,6 +34,13 @@ router.post('/json', async (req, res) => {
             });
         }
 
+        if (!isImageUrl(image)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Image must be an image URL (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico) - no other file formats are allowed'
+            });
+        }
+
         const newBanner = new Banner({
             title,
             subtitle: subtitle || '',
@@ -48,7 +56,7 @@ router.post('/json', async (req, res) => {
         res.status(201).json({
             success: true,
             message: 'Banner created successfully',
-            banner: newBanner
+            banner: serializeBanner(req, newBanner)
         });
     } catch (error) {
         console.error('Error creating banner (json):', error);
@@ -73,31 +81,32 @@ const upload = multer({
     }
 });
 
-async function uploadBannerToS3(file) {
-    if (!AWS_REGION || !AWS_S3_BUCKET) {
-        throw new Error('Missing AWS configuration (AWS_REGION, AWS_S3_BUCKET)');
-    }
-
-    const ext = (file.originalname || '').split('.').pop() || 'bin';
+async function uploadBannerToStorage(req, file) {
+    const extRaw = String(file.originalname || '').split('.').pop() || 'bin';
+    const ext = String(extRaw).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin';
     const random = crypto.randomBytes(12).toString('hex');
     const key = `uploads/banners/${Date.now()}-${random}.${ext}`;
 
-    await s3.send(
-        new PutObjectCommand({
-            Bucket: AWS_S3_BUCKET,
-            Key: key,
-            Body: file.buffer,
-            ContentType: file.mimetype,
-        })
-    );
+    await uploadObject({
+        key,
+        body: file.buffer,
+        contentType: file.mimetype,
+    });
 
+    // Stable proxy URL (no credentials, never expires) — the proxy mints a
+    // fresh presigned URL per request.
     return {
         key,
-        url: `https://${AWS_S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${key}`,
+        url: absoluteUrl(req, proxyPathFor(key)),
     };
 }
 
 // GET /api/admin/banners - Get all banners
+function serializeBanner(req, banner) {
+    const b = banner.toObject ? banner.toObject() : banner;
+    return { ...b, image: resolveAssetUrl(req, b.image) };
+}
+
 router.get('/', async (req, res) => {
     try {
         const { position, active, grouped } = req.query;
@@ -121,7 +130,7 @@ router.get('/', async (req, res) => {
                 if (!groupedBanners[banner.position]) {
                     groupedBanners[banner.position] = [];
                 }
-                groupedBanners[banner.position].push(banner);
+                groupedBanners[banner.position].push(serializeBanner(req, banner));
             });
 
             return res.json({
@@ -132,7 +141,7 @@ router.get('/', async (req, res) => {
 
         res.json({
             success: true,
-            banners: banners
+            banners: banners.map((b) => serializeBanner(req, b))
         });
     } catch (error) {
         console.error('Error fetching banners:', error);
@@ -157,7 +166,7 @@ router.get('/:id', async (req, res) => {
 
         res.json({
             success: true,
-            banner: banner
+            banner: serializeBanner(req, banner)
         });
     } catch (error) {
         console.error('Error fetching banner:', error);
@@ -183,7 +192,7 @@ router.post('/', upload.single('image'), async (req, res) => {
         let imageUrl = req.body.image; // For external URLs
 
         if (req.file) {
-            const s3Obj = await uploadBannerToS3(req.file);
+            const s3Obj = await uploadBannerToStorage(req, req.file);
             imageUrl = s3Obj.url;
         }
 
@@ -191,6 +200,13 @@ router.post('/', upload.single('image'), async (req, res) => {
             return res.status(400).json({
                 success: false,
                 message: 'Image is required (either upload file or provide URL)'
+            });
+        }
+
+        if (!isImageUrl(imageUrl)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Image must be an image URL (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico) - no other file formats are allowed'
             });
         }
 
@@ -209,7 +225,7 @@ router.post('/', upload.single('image'), async (req, res) => {
         res.status(201).json({
             success: true,
             message: 'Banner created successfully',
-            banner: newBanner
+            banner: serializeBanner(req, newBanner)
         });
     } catch (error) {
         console.error('Error creating banner:', error);
@@ -243,10 +259,16 @@ router.put('/:id', upload.single('image'), async (req, res) => {
         if (order !== undefined) banner.order = parseInt(order);
 
         if (req.file) {
-            const s3Obj = await uploadBannerToS3(req.file);
+            const s3Obj = await uploadBannerToStorage(req, req.file);
             banner.image = s3Obj.url;
         } else if (req.body.image && req.body.image !== banner.image) {
             // If external image URL was provided
+            if (!isImageUrl(req.body.image)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Image must be an image URL (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico) - no other file formats are allowed'
+                });
+            }
             banner.image = req.body.image;
         }
 
@@ -256,7 +278,7 @@ router.put('/:id', upload.single('image'), async (req, res) => {
         res.json({
             success: true,
             message: 'Banner updated successfully',
-            banner: banner
+            banner: serializeBanner(req, banner)
         });
     } catch (error) {
         console.error('Error updating banner:', error);
@@ -287,7 +309,15 @@ router.put('/:id/json', async (req, res) => {
         if (position !== undefined) banner.position = position;
         if (active !== undefined) banner.active = Boolean(active);
         if (order !== undefined) banner.order = parseInt(order, 10);
-        if (image !== undefined) banner.image = String(image);
+        if (image !== undefined) {
+            if (!isImageUrl(image)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Image must be an image URL (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico) - no other file formats are allowed'
+                });
+            }
+            banner.image = String(image);
+        }
 
         banner.updatedAt = new Date();
         await banner.save();
@@ -295,7 +325,7 @@ router.put('/:id/json', async (req, res) => {
         res.json({
             success: true,
             message: 'Banner updated successfully',
-            banner: banner
+            banner: serializeBanner(req, banner)
         });
     } catch (error) {
         console.error('Error updating banner (json):', error);
@@ -352,7 +382,7 @@ router.put('/:id/toggle', async (req, res) => {
         res.json({
             success: true,
             message: 'Banner status updated successfully',
-            banner: banner
+            banner: serializeBanner(req, banner)
         });
     } catch (error) {
         console.error('Error updating banner status:', error);
@@ -373,7 +403,7 @@ router.post('/upload', authenticateAdmin, requireAdmin, upload.single('image'), 
             });
         }
 
-        const s3Obj = await uploadBannerToS3(req.file);
+        const s3Obj = await uploadBannerToStorage(req, req.file);
 
         res.json({
             success: true,

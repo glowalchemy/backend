@@ -4,6 +4,8 @@ const router = express.Router();
 const { CategoryModel } = require('../models/category');
 const { ProductModel } = require('../models/product');
 const { authenticateAdmin, requireAdmin } = require('../middleware/adminAuth');
+const catalogService = require('../services/catalogService');
+const cacheService = require('../services/cacheService');
 
 // GET /api/categories - Get all categories
 router.get('/', async (req, res) => {
@@ -14,30 +16,43 @@ router.get('/', async (req, res) => {
         if (mode === 'public') {
             filter.active = true;
         }
-        const categories = await CategoryModel.find(filter).sort({ order: 1 }).lean();
 
-        const categoryIds = categories.map((c) => String(c._id));
-        const countById = new Map(categoryIds.map((id) => [id, 0]));
+        // ONE aggregation for all category/subcategory counts with the SAME
+        // visibility semantics as the listing (active+published + public
+        // visibility) — replaces the previous N+1 countDocuments pattern.
+        const cacheKey = `categories|${mode}|${parentId || 'all'}`;
+        const run = async () => {
+            const categories = await CategoryModel.find(filter).sort({ order: 1 }).lean();
+            const { countById, countBySub } = mode === 'public'
+                ? await catalogService.computeCategoryCounts('public')
+                : { countById: new Map(), countBySub: new Map() };
+            return {
+                categories,
+                countById,
+                countBySub,
+            };
+        };
 
-        await Promise.all(
-            categoryIds.map(async (id) => {
-                const productFilter = {
-                    $or: [
-                        { category: id },
-                        { categoryId: id },
-                        { 'management.basic.categoryIds': id },
-                    ],
-                };
+        let categories;
+        let countById;
+        let countBySub;
+        if (mode === 'public') {
+            const hit = await cacheService.getOrSet(cacheKey, run);
+            categories = hit.value.categories;
+            countById = hit.value.countById;
+            countBySub = hit.value.countBySub;
+        } else {
+            const result = await run();
+            categories = result.categories;
+            countById = result.countById;
+            countBySub = result.countBySub;
+        }
 
-                if (mode === 'public') {
-                    productFilter.status = 'active';
-                    productFilter.visibility = 'public';
-                }
-
-                const count = await ProductModel.countDocuments(productFilter);
-                countById.set(id, Number(count ?? 0) || 0);
-            })
-        );
+        if (mode === 'public') {
+            res.set('Cache-Control', 'public, max-age=15, s-maxage=15');
+        } else {
+            res.set('Cache-Control', 'no-store');
+        }
 
         res.json(
             categories.map((c) => ({
@@ -48,7 +63,8 @@ router.get('/', async (req, res) => {
                 parentId: c.parentId,
                 order: c.order,
                 active: c.active,
-                productCount: countById.get(String(c._id)) ?? c.productCount,
+                productCount: countById.get(String(c._id)) ?? c.productCount ?? 0,
+                subProductCount: countBySub.get(String(c._id)) ?? 0,
                 imageUrl: c.imageUrl,
             }))
         );
@@ -99,6 +115,7 @@ router.post('/', authenticateAdmin, requireAdmin, async (req, res) => {
             productCount: 0,
         });
 
+        cacheService.invalidateAll();
         res.status(201).json({
             id: String(created._id),
             name: created.name,
@@ -137,6 +154,7 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
 
         if (!updated) return res.status(404).json({ success: false, message: 'Category not found' });
 
+        cacheService.invalidateAll();
         res.json({
             id: String(updated._id),
             name: updated.name,
@@ -162,6 +180,7 @@ router.delete('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         const deleted = await CategoryModel.findByIdAndDelete(req.params.id).lean();
         if (!deleted) return res.status(404).json({ success: false, message: 'Category not found' });
 
+        cacheService.invalidateAll();
         res.json({ ok: true });
     } catch (error) {
         console.error('Failed to delete category:', error);

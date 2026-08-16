@@ -4,6 +4,7 @@ const router = express.Router();
 const { CategoryModel } = require('../models/category');
 const { ProductModel } = require('../models/product');
 const { authenticateAdmin, requireAdmin } = require('../middleware/adminAuth');
+const catalogService = require('../services/catalogService');
 
 // GET /api/subcategories?parentCategoryId=XXX - Get subcategories for a parent category
 router.get('/', async (req, res) => {
@@ -33,8 +34,10 @@ router.get('/', async (req, res) => {
             };
 
             if (mode === 'public') {
-                productFilter.status = 'active';
-                productFilter.visibility = 'public';
+                // Same visibility semantics as the listing (active+published +
+                // public visibility variants) so counts never disagree.
+                productFilter.$and = Array.isArray(productFilter.$and) ? productFilter.$and : [];
+                productFilter.$and.push(catalogService.publicBaseFilter('public'));
             }
 
             const rows = await ProductModel.aggregate([

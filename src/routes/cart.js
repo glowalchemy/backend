@@ -3,6 +3,7 @@ const router = express.Router();
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const { authenticateUser, requireUser } = require('../middleware/userAuth');
+const { resolveAssetUrl } = require('../config/storage');
 
 // JWT Secret
 const JWT_SECRET = require('../config').jwtSecret;
@@ -28,7 +29,7 @@ function safeStringValue(v) {
     return v.trim().slice(0, 256);
 }
 
-function mapCartItemsForResponse(items) {
+function mapCartItemsForResponse(items, req) {
     return (items || []).map((it) => {
         const raw = it?.toJSON ? it.toJSON() : { ...it };
         const p = raw?.product && typeof raw.product === 'object'
@@ -38,7 +39,10 @@ function mapCartItemsForResponse(items) {
         if (p && typeof p === 'object') {
             if (raw?.name) p.name = raw.name;
             if (raw?.sku) p.sku = raw.sku;
-            if (raw?.image) p.image = raw.image;
+            // Resolve stored image references (legacy S3 URLs, proxy paths,
+            // or snapshots) to a current, usable proxy URL.
+            if (raw?.image) p.image = resolveAssetUrl(req, raw.image);
+            else if (p?.image) p.image = resolveAssetUrl(req, p.image);
             if (raw?.size) p.size = raw.size;
             if (raw?.color) p.color = raw.color;
         }
@@ -116,7 +120,7 @@ router.get('/', authenticateUser, requireUser, async (req, res) => {
         }
 
         res.json({
-            items: mapCartItemsForResponse(cart.items),
+            items: mapCartItemsForResponse(cart.items, req),
             totalAmount: cart.totalAmount,
         });
     } catch (error) {
@@ -214,7 +218,7 @@ router.post('/add', authenticateUser, requireUser, async (req, res) => {
 
         res.json({
             message: 'Item added to cart',
-            items: mapCartItemsForResponse(updatedCart.items),
+            items: mapCartItemsForResponse(updatedCart.items, req),
             totalAmount: updatedCart.totalAmount,
         });
     } catch (error) {
@@ -278,7 +282,7 @@ router.put('/update', authenticateUser, requireUser, async (req, res) => {
 
         res.json({
             message: 'Cart updated',
-            items: mapCartItemsForResponse(updatedCart.items),
+            items: mapCartItemsForResponse(updatedCart.items, req),
             totalAmount: updatedCart.totalAmount,
         });
     } catch (error) {
@@ -324,7 +328,7 @@ router.delete('/remove/:productId', authenticateUser, requireUser, async (req, r
 
         res.json({
             message: 'Item removed from cart',
-            items: mapCartItemsForResponse(updatedCart.items),
+            items: mapCartItemsForResponse(updatedCart.items, req),
             totalAmount: updatedCart.totalAmount,
         });
     } catch (error) {
@@ -383,7 +387,7 @@ router.delete('/remove', authenticateUser, requireUser, async (req, res) => {
 
         res.json({
             message: 'Item removed from cart',
-            items: mapCartItemsForResponse(updatedCart.items),
+            items: mapCartItemsForResponse(updatedCart.items, req),
             totalAmount: updatedCart.totalAmount,
         });
     } catch (error) {
@@ -455,7 +459,7 @@ router.delete('/remove-by-object', authenticateUser, requireUser, async (req, re
 
         res.json({
             message: 'Item removed from cart',
-            items: mapCartItemsForResponse(updatedCart.items),
+            items: mapCartItemsForResponse(updatedCart.items, req),
             totalAmount: updatedCart.totalAmount,
             extractedProductId: actualProductId
         });
@@ -538,7 +542,7 @@ router.put('/update-by-object', authenticateUser, requireUser, async (req, res) 
 
         res.json({
             message: 'Cart updated',
-            items: mapCartItemsForResponse(updatedCart.items),
+            items: mapCartItemsForResponse(updatedCart.items, req),
             totalAmount: updatedCart.totalAmount,
             extractedProductId: actualProductId
         });

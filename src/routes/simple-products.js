@@ -7,55 +7,40 @@ const { CategoryModel } = require('../models/category');
 const { authenticateAny } = require('../middleware/authAny');
 const { ProductModel } = require('../models/product');
 const { Order } = require('../models/order');
+const { resolveAssetUrl, isImageUrl } = require('../config/storage');
+const catalogService = require('../services/catalogService');
+const cacheService = require('../services/cacheService');
+const { syncSearchProjection } = require('../services/productNormalizer');
 
-const AWS_REGION = process.env.AWS_REGION;
-const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET;
+const { mapProducts, listPublic, parseIntQuery } = catalogService;
 
 function toAbsoluteUrl(req, url) {
-    const value = String(url ?? '').trim();
-    if (!value) return '';
-    if (/^https?:\/\//i.test(value)) return value;
-    // Support stored paths like "uploads/..." and "/uploads/..." for S3
-    const normalizedUploadsPath = value.startsWith('/uploads/') ? value.slice(1) : value;
-    if (/^uploads\//i.test(normalizedUploadsPath) && AWS_REGION && AWS_S3_BUCKET) {
-        return `https://${AWS_S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${normalizedUploadsPath}`;
+    return resolveAssetUrl(req, url);
+}
+
+/**
+ * Validate that every non-empty image field in a product management payload
+ * is an image URL (jpg/png/jpeg/webp/avif/gif/svg/bmp/tiff/ico or an app
+ * proxy path). Rejects PDFs, videos, archives and any other file format.
+ */
+function validateImageUrlsOrThrow(values) {
+    const media = values?.media ?? {};
+    const images = Array.isArray(media.images) ? media.images : [];
+    const all = [
+        ...images.map((i) => i?.url),
+        ...((Array.isArray(values?.colorVariants) ? values.colorVariants : [])
+            .flatMap((v) => (Array.isArray(v?.images) ? v.images : []))),
+        values?.attributes?.sizeGuideImageUrl,
+    ];
+    for (const raw of all) {
+        const url = String(raw ?? '').trim();
+        if (!url) continue;
+        if (!isImageUrl(url)) {
+            const err = new Error('Only image URLs are allowed (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico). No other file formats.');
+            err.statusCode = 400;
+            throw err;
+        }
     }
-    if (value.startsWith('/')) {
-        const proto = req.headers['x-forwarded-proto'] || req.protocol;
-        return `${proto}://${req.get('host')}${value}`;
-    }
-    return value;
-}
-
-function parseIntQuery(value) {
-    if (value === undefined || value === null) return undefined;
-    const n = Number.parseInt(String(value), 10);
-    if (!Number.isFinite(n)) return undefined;
-    return n;
-}
-
-function escapeRegExp(value) {
-    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-async function resolveCategoryId(categoryValue) {
-    const raw = String(categoryValue ?? '').trim();
-    if (!raw) return '';
-
-    // If it's already a valid ObjectId, treat as id
-    if (mongoose?.Types?.ObjectId?.isValid(raw)) return raw;
-
-    const rx = new RegExp(`^${escapeRegExp(raw)}$`, 'i');
-    const doc = await CategoryModel.findOne({ $or: [{ name: rx }, { slug: rx }] }).lean();
-    return doc ? String(doc._id) : '';
-}
-
-function parseCsvQuery(value) {
-    if (value === undefined || value === null) return [];
-    return String(value)
-        .split(',')
-        .map((v) => String(v).trim())
-        .filter((v) => v.length > 0);
 }
 
 async function validateSubCategoryOrThrow(base) {
@@ -82,151 +67,6 @@ async function validateSubCategoryOrThrow(base) {
         err.statusCode = 400;
         throw err;
     }
-}
-
-function pickAttributeValues(management, needle) {
-    const sets = management && management.attributes && Array.isArray(management.attributes.sets)
-        ? management.attributes.sets
-        : [];
-    const lower = String(needle || '').toLowerCase();
-    const matches = sets.filter((s) => typeof (s && s.name) === 'string' && String(s.name).toLowerCase().includes(lower));
-    const vals = matches.flatMap((m) => (Array.isArray(m?.values) ? m.values : []));
-    return vals
-        .map((v) => String(v))
-        .map((v) => v.trim())
-        .filter((v) => v.length > 0);
-}
-
-function pickSizeValues(management) {
-    const sets = management && management.attributes && Array.isArray(management.attributes.sets)
-        ? management.attributes.sets
-        : [];
-
-    const matches = sets.filter((s) => {
-        const name = typeof (s && s.name) === 'string' ? String(s.name).toLowerCase() : '';
-        if (!name) return false;
-        if (!name.includes('size')) return false;
-        // Avoid "Size Guide" matching the size list.
-        if (name.includes('guide')) return false;
-        return true;
-    });
-
-    const vals = matches.flatMap((m) => (Array.isArray(m?.values) ? m.values : []));
-    const seen = new Set();
-    return vals
-        .map((v) => String(v))
-        .map((v) => v.trim())
-        .filter((v) => v.length > 0)
-        .filter((v) => {
-            const key = v.toLowerCase();
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-}
-
-function mapProduct(req, p) {
-    const management = p && p.management ? p.management : null;
-    const shipping = management && management.shipping ? management.shipping : null;
-    const pricing = management && management.pricing ? management.pricing : null;
-    const inventory = management && management.inventory ? management.inventory : null;
-    const media = management && management.media ? management.media : null;
-    const descriptionHtml = management && management.basic && typeof management.basic.descriptionHtml === 'string'
-        ? management.basic.descriptionHtml
-        : '';
-    const derivedSizes = pickSizeValues(management);
-    const derivedColors = pickAttributeValues(management, 'color');
-    const sizeGuide = pickAttributeValues(management, 'size guide');
-    const sizeGuideKey = sizeGuide && sizeGuide.length ? String(sizeGuide[0]) : '';
-
-    const incomingColorVariants = management && Array.isArray(management.colorVariants)
-        ? management.colorVariants
-        : null;
-    const hasAnyVariantImages = (variants) => {
-        if (!Array.isArray(variants) || variants.length === 0) return false;
-        return variants.some((v) => Array.isArray(v?.images) && v.images.length > 0);
-    };
-    const generatedColorVariants = derivedColors.map((colorNameRaw) => {
-        const colorName = String(colorNameRaw || '').trim();
-        const color = colorName.toLowerCase().replace(/\s+/g, '-');
-        return { color, colorName, colorCode: '', images: [] };
-    });
-
-    const storedVariants = Array.isArray(p.colorVariants) && p.colorVariants.length ? p.colorVariants : null;
-    const preferredVariants = hasAnyVariantImages(incomingColorVariants)
-        ? incomingColorVariants
-        : (hasAnyVariantImages(storedVariants) ? storedVariants : null);
-
-    const sellingPrice = Number(pricing?.sellingPrice ?? pricing?.selling_price ?? NaN);
-    const price = Number.isFinite(sellingPrice) ? sellingPrice : Number(p?.price ?? 0) || 0;
-
-    const stockQuantity = Number(inventory?.stockQuantity ?? inventory?.stock_quantity ?? NaN);
-    const stock = Number.isFinite(stockQuantity) ? stockQuantity : Number(p?.stock ?? 0) || 0;
-
-    const rawMediaImages = Array.isArray(media?.images) ? media.images : [];
-    const mediaThumbId = media?.thumbnailId ?? null;
-    const mediaThumb = mediaThumbId ? rawMediaImages.find((i) => i?.id === mediaThumbId) : null;
-    const mediaPrimary = String((mediaThumb?.url ?? rawMediaImages[0]?.url ?? '') || '').trim();
-    const mediaGallery = rawMediaImages
-        .map((i) => String(i?.url ?? '').trim())
-        .filter((u) => u.length > 0);
-
-    const image = toAbsoluteUrl(req, String(p?.image ?? '').trim() || mediaPrimary);
-    const galleryImages = ((Array.isArray(p?.galleryImages) ? p.galleryImages : []).length
-        ? (Array.isArray(p?.galleryImages) ? p.galleryImages : [])
-        : mediaGallery)
-        .map((img) => toAbsoluteUrl(req, img))
-        .filter(Boolean);
-
-    const colorVariants = (Array.isArray(preferredVariants) && preferredVariants.length
-        ? preferredVariants
-        : (Array.isArray(incomingColorVariants) && incomingColorVariants.length ? incomingColorVariants : (storedVariants && storedVariants.length ? storedVariants : generatedColorVariants)))
-        .map((v) => {
-            const images = Array.isArray(v?.images)
-                ? v.images.map((img) => toAbsoluteUrl(req, img)).filter(Boolean)
-                : [];
-            const sku = typeof v?.sku === 'string' ? v.sku.trim() : '';
-            return {
-                ...v,
-                images,
-                sku: sku || undefined,
-                price: Number.isFinite(Number(v?.price)) ? Number(v.price) : v?.price,
-                stock: Number.isFinite(Number(v?.stock)) ? Number(v.stock) : v?.stock,
-            };
-        });
-
-    return {
-        _id: String(p._id),
-        id: String(p._id),
-        slug: p.slug,
-        visibility: (p.visibility ?? (management && management.basic ? management.basic.visibility : undefined) ?? 'public'),
-        name: p.name,
-        sku: p.sku,
-        price,
-        stock,
-        status: p.status,
-        image,
-        galleryImages,
-        category: p.category,
-        description: p.description,
-        descriptionHtml,
-        featured: p.featured,
-        createdAt: p.createdAt,
-        updatedAt: p.updatedAt,
-        freeShipping: typeof p?.freeShipping === 'boolean' ? p.freeShipping : Boolean(shipping?.freeShipping),
-        codAvailable: typeof p?.codAvailable === 'boolean' ? p.codAvailable : Boolean(shipping?.codAvailable),
-        codCharge: Number(p?.codCharge ?? shipping?.codCharge ?? 0) || 0,
-        shippingCharge: Number(p?.shippingCharge ?? shipping?.shippingCharge ?? 0) || 0,
-        weight: Number(p?.weight ?? shipping?.weightKg ?? 0) || 0,
-        dimensions: p?.dimensions ?? (shipping?.dimensionsCm ?? { length: 0, width: 0, height: 0 }),
-        sizes: Array.isArray(p.sizes) && p.sizes.length ? p.sizes : derivedSizes,
-        colors: Array.isArray(p.colors) && p.colors.length ? p.colors : derivedColors,
-        sizeGuide,
-        sizeGuideKey,
-        sizeGuideImageUrl: toAbsoluteUrl(req, management && management.attributes ? management.attributes.sizeGuideImageUrl : ''),
-        colorVariants,
-        management: p.management,
-    };
 }
 
 function mapStatusToCatalogStatus(status) {
@@ -262,135 +102,55 @@ router.get('/', async (req, res, next) => {
 router.get('/', async (req, res) => {
     try {
         const mode = String(req.query?.mode ?? 'public');
-        const db = mongoose.connection.db;
-
-        const filter = {};
-        if (mode !== 'admin') {
-            // public mode: only active products
-            filter.status = { $in: ['active', 'published'] };
-            console.log('[Products API] Public mode - filtering by status:', filter.status);
-            filter.$or = [
-                { visibility: 'public' },
-                { visibility: { $exists: false } },
-                { visibility: null },
-                { 'management.basic.visibility': 'public' },
-                { 'management.basic.visibility': { $exists: false } },
-                { 'management.basic.visibility': null },
-            ];
-        }
-
-        const category = req.query?.category ? String(req.query.category) : '';
-        if (category) {
-            const resolvedCategoryId = await resolveCategoryId(category);
-            const or = [{ category }];
-            if (resolvedCategoryId) {
-                or.push({ category: resolvedCategoryId });
-                or.push({ categoryId: resolvedCategoryId });
-                // Legacy products may only have categoryIds in management
-                or.push({ 'management.basic.categoryIds': resolvedCategoryId });
-            }
-
-            filter.$and = Array.isArray(filter.$and) ? filter.$and : [];
-            filter.$and.push({ $or: or });
-        }
-
-        const subCategoryId = req.query?.subCategoryId ? String(req.query.subCategoryId) : '';
-        if (subCategoryId) {
-            // Some legacy products may have this value only inside management.basic
-            filter.$and = Array.isArray(filter.$and) ? filter.$and : [];
-            filter.$and.push({
-                $or: [
-                    { subCategoryId },
-                    { 'management.basic.subCategoryId': subCategoryId },
-                ],
-            });
-        }
-
         const q = String(req.query?.q ?? '').trim();
-        if (q) {
-            const rx = new RegExp(escapeRegExp(q), 'i');
-            filter.$or = [{ name: rx }, { sku: rx }, { brand: rx }, { category: rx }, { tags: rx }];
-        }
-
-        const minPrice = parseIntQuery(req.query?.minPrice);
-        const maxPrice = parseIntQuery(req.query?.maxPrice);
-        if (minPrice !== undefined || maxPrice !== undefined) {
-            filter.price = {};
-            if (minPrice !== undefined) filter.price.$gte = minPrice;
-            if (maxPrice !== undefined) filter.price.$lte = maxPrice;
-        }
-
-        if (String(req.query?.inStock ?? '').toLowerCase() === 'true') {
-            filter.stock = { $gt: 0 };
-        }
-
-        if (String(req.query?.freeShipping ?? '').toLowerCase() === 'true') {
-            filter.freeShipping = true;
-        }
-
-        if (String(req.query?.onSale ?? '').toLowerCase() === 'true') {
-            filter.saleEnabled = true;
-            filter.saleDiscount = { $gt: 0 };
-        }
-
-        const sizes = parseCsvQuery(req.query?.sizes);
-        if (sizes.length > 0) {
-            filter.sizes = { $in: sizes };
-        }
-
-        const colors = parseCsvQuery(req.query?.colors);
-        if (colors.length > 0) {
-            filter.colors = { $in: colors };
-        }
-
-        const brands = parseCsvQuery(req.query?.brands);
-        if (brands.length > 0) {
-            filter.brand = { $in: brands };
-        }
-
+        const category = String(req.query?.category ?? '').trim();
+        const subCategoryId = String(req.query?.subCategoryId ?? '').trim();
         const sort = String(req.query?.sort ?? '').trim();
         const order = String(req.query?.order ?? '').trim().toLowerCase();
-        const sortDir = order === 'asc' ? 1 : -1;
-        const sortSpec = (() => {
-            if (sort === 'price_asc') return { price: 1, createdAt: -1 };
-            if (sort === 'price_desc') return { price: -1, createdAt: -1 };
-            if (sort === 'name_asc') return { name: 1, createdAt: -1 };
-            if (sort === 'name_desc') return { name: -1, createdAt: -1 };
-            if (sort === 'rating_desc') return { rating: -1, createdAt: -1 };
-            if (sort === 'newest') return { createdAt: -1 };
-            if (sort) return { [sort]: sortDir, createdAt: -1 };
-            return { createdAt: -1 };
-        })();
-
         const page = parseIntQuery(req.query?.page);
         const limit = parseIntQuery(req.query?.limit);
-        const shouldPaginate = page !== undefined || limit !== undefined;
+        const wantFacets = String(req.query?.facets ?? '').toLowerCase() === 'true';
 
-        if (shouldPaginate) {
-            const safePage = Math.max(1, page ?? 1);
-            const safeLimit = Math.min(100, Math.max(1, limit ?? 24));
-            const skip = (safePage - 1) * safeLimit;
+        const params = {
+            req,
+            mode,
+            q: q || undefined,
+            category: category || undefined,
+            subCategoryId: subCategoryId || undefined,
+            minPrice: parseIntQuery(req.query?.minPrice),
+            maxPrice: parseIntQuery(req.query?.maxPrice),
+            inStock: String(req.query?.inStock ?? '').toLowerCase() === 'true' ? true : undefined,
+            freeShipping: String(req.query?.freeShipping ?? '').toLowerCase() === 'true' ? true : undefined,
+            onSale: String(req.query?.onSale ?? '').toLowerCase() === 'true' ? true : undefined,
+            featured: String(req.query?.featured ?? '').toLowerCase() === 'true' ? true : undefined,
+            rating: parseIntQuery(req.query?.rating),
+            sizes: catalogService.parseCsvQuery(req.query?.sizes),
+            colors: catalogService.parseCsvQuery(req.query?.colors),
+            brands: catalogService.parseCsvQuery(req.query?.brands),
+            sort: sort || undefined,
+            order,
+            page,
+            limit,
+            wantFacets,
+        };
 
-            const [totalItems, docs] = await Promise.all([
-                db.collection('products').countDocuments(filter),
-                db.collection('products').find(filter).sort(sortSpec).skip(skip).limit(safeLimit).toArray(),
-            ]);
-
-            const totalPages = Math.max(1, Math.ceil(Number(totalItems || 0) / safeLimit));
-
-            return res.json({
-                items: docs.map((p) => mapProduct(req, p)),
-                page: safePage,
-                limit: safeLimit,
-                total: totalItems,
-                totalPages,
-                totalItems,
-            });
+        const data = mode === 'public' ? await listPublic(req, params) : await catalogService.queryCatalog(params);
+        const cacheable = mode === 'public';
+        if (cacheable) {
+            res.set('Cache-Control', 'public, max-age=15, s-maxage=15');
+        } else {
+            res.set('Cache-Control', 'no-store');
         }
-
-        const docs = await db.collection('products').find(filter).sort(sortSpec).toArray();
-        console.log(`[Products API] Found ${docs.length} products, filter:`, JSON.stringify(filter));
-        res.json(docs.map((p) => mapProduct(req, p)));
+        if (q) {
+            // Include lightweight category/brand suggestions for full-search UX.
+            const suggestions = await catalogService.suggestForQuery(q);
+            if (Array.isArray(data)) {
+                res.json(data);
+                return;
+            }
+            return res.json({ ...data, suggestions });
+        }
+        res.json(data);
     } catch (error) {
         console.error('Error fetching products:', error);
         res.status(500).json({ success: false, message: 'Failed to fetch products' });
@@ -438,7 +198,7 @@ router.get('/slug/:slug', async (req, res) => {
 
         const doc = await db.collection('products').findOne(filter);
         if (!doc) return res.status(404).json({ success: false, message: 'Product not found' });
-        res.json(mapProduct(req, doc));
+        res.json((await mapProducts(req, [doc]))[0]);
     } catch (error) {
         console.error('Error fetching product by slug:', error);
         res.status(500).json({ success: false, message: 'Failed to fetch product' });
@@ -464,6 +224,12 @@ router.post('/:productId/reviews', authenticateAny, async (req, res) => {
             .map((u) => String(u || '').trim())
             .filter((u) => u.length > 0)
             .slice(0, 5);
+
+        for (const u of images) {
+            if (!isImageUrl(u)) {
+                return res.status(400).json({ success: false, message: 'Review images must be image URLs only (no other file formats)' });
+            }
+        }
 
         if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
             return res.status(400).json({ success: false, message: 'Rating must be between 1 and 5' });
@@ -514,6 +280,7 @@ router.post('/:productId/reviews', authenticateAny, async (req, res) => {
             : 0;
         product.rating = Math.round(avg * 10) / 10;
         await product.save();
+        cacheService.invalidateAll();
 
         const created = product.reviews[product.reviews.length - 1];
         return res.status(201).json({
@@ -542,6 +309,7 @@ router.post('/draft', authenticateAdmin, requireAdmin, async (req, res) => {
         const now = new Date();
         const base = values?.basic ?? {};
         await validateSubCategoryOrThrow(base);
+        validateImageUrlsOrThrow(values);
         const pricing = values?.pricing ?? {};
         const inventory = values?.inventory ?? {};
         const media = values?.media ?? {};
@@ -586,10 +354,12 @@ router.post('/draft', authenticateAdmin, requireAdmin, async (req, res) => {
 
         if (id) {
             await db.collection('products').updateOne({ _id: new ObjectId(id) }, { $set: { ...doc, updatedAt: now } });
+            cacheService.invalidateAll();
             return res.json({ id: String(id) });
         }
 
         const result = await db.collection('products').insertOne(doc);
+        cacheService.invalidateAll();
         res.json({ id: String(result.insertedId) });
     } catch (error) {
         if (error && error.statusCode) {
@@ -612,6 +382,7 @@ router.post('/publish', authenticateAdmin, requireAdmin, async (req, res) => {
         const now = new Date();
         const base = values?.basic ?? {};
         await validateSubCategoryOrThrow(base);
+        validateImageUrlsOrThrow(values);
         const pricing = values?.pricing ?? {};
         const inventory = values?.inventory ?? {};
 
@@ -656,11 +427,16 @@ router.post('/publish', authenticateAdmin, requireAdmin, async (req, res) => {
 
         if (id) {
             await db.collection('products').updateOne({ _id: new ObjectId(id) }, { $set: doc });
+            const updated = await db.collection('products').findOne({ _id: new ObjectId(id) });
+            if (updated) syncSearchProjection(updated);
+            cacheService.invalidateAll();
             return res.json({ id: String(id) });
         }
 
         const created = { ...doc, createdAt: now };
         const result = await db.collection('products').insertOne(created);
+        syncSearchProjection({ ...created, _id: result.insertedId });
+        cacheService.invalidateAll();
         res.json({ id: String(result.insertedId) });
     } catch (error) {
         if (error && error.statusCode) {
@@ -682,6 +458,7 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         const now = new Date();
         const base = values?.basic ?? {};
         await validateSubCategoryOrThrow(base);
+        validateImageUrlsOrThrow(values);
         const pricing = values?.pricing ?? {};
         const inventory = values?.inventory ?? {};
         const media = values?.media ?? {};
@@ -735,6 +512,9 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
                 },
             }
         );
+        const updated = await db.collection('products').findOne({ _id: new ObjectId(req.params.id) });
+        if (updated) syncSearchProjection(updated);
+        cacheService.invalidateAll();
         res.json({ id: req.params.id });
     } catch (error) {
         if (error && error.statusCode) {
@@ -752,6 +532,7 @@ router.delete('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         const { ObjectId } = require('mongodb');
         const result = await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
         if (!result.deletedCount) return res.status(404).json({ success: false, message: 'Product not found' });
+        cacheService.invalidateAll();
         res.json({ ok: true });
     } catch (error) {
         console.error('Error deleting product:', error);
@@ -793,7 +574,7 @@ router.get('/:id', async (req, res) => {
 
         const doc = await db.collection('products').findOne(filter);
         if (!doc) return res.status(404).json({ success: false, message: 'Product not found' });
-        res.json(mapProduct(req, doc));
+        res.json((await mapProducts(req, [doc]))[0]);
     } catch (error) {
         console.error('Error fetching product:', error);
         res.status(500).json({ success: false, message: 'Failed to fetch product' });

@@ -1,30 +1,25 @@
 const express = require('express');
 const router = express.Router();
 const multer = require('multer');
-const mongoose = require('mongoose');
-const crypto = require('crypto');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { authenticateAdmin, requireAdmin } = require('../middleware/adminAuth');
-
-const AWS_REGION = process.env.AWS_REGION;
-const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET;
-
-const s3 = new S3Client({ region: AWS_REGION });
-
-const UploadSchema = new mongoose.Schema(
-    {
-        key: { type: String, required: true },
-        url: { type: String, required: true },
-        bucket: { type: String, required: true },
-        region: { type: String, required: true },
-        contentType: { type: String, default: '' },
-        size: { type: Number, default: 0 },
-        originalName: { type: String, default: '' },
-    },
-    { timestamps: true }
-);
-
-const Upload = mongoose.models.Upload || mongoose.model('Upload', UploadSchema);
+const {
+    uploadObject,
+    getSignedDownloadUrl,
+    getObjectStream,
+    isSafeKey,
+    proxyPathFor,
+    resolveAssetUrl,
+    absoluteUrl,
+    region: STORAGE_REGION,
+    bucket: STORAGE_BUCKET,
+    EXT_MIME,
+} = require('../config/storage');
+const {
+    LIMITS,
+    isVariantObjectKey,
+} = require('../services/imageProcessor');
+const { processAndStoreImage } = require('../services/imageService');
+const { UploadModel } = require('../models/upload');
 
 router.get('/list', authenticateAdmin, requireAdmin, async (req, res) => {
     try {
@@ -33,7 +28,7 @@ router.get('/list', authenticateAdmin, requireAdmin, async (req, res) => {
 
         const filter = folderSafe ? { key: new RegExp(`^uploads/${folderSafe}/`) } : {};
 
-        const docs = await Upload.find(filter)
+        const docs = await UploadModel.find(filter)
             .sort({ createdAt: -1 })
             .limit(500)
             .lean();
@@ -43,10 +38,17 @@ router.get('/list', authenticateAdmin, requireAdmin, async (req, res) => {
                 const key = String(d.key ?? '');
                 const parts = key.split('/');
                 const derivedFolder = parts.length >= 2 && parts[0] === 'uploads' ? parts[1] : '';
+                const variants = buildVariantMap(req, d);
                 return {
                     id: String(d._id),
                     key,
-                    url: d.url,
+                    // Resolve stored references (legacy S3 URLs or proxy paths) to
+                    // a current, usable proxy URL. Never expose raw presigned URLs.
+                    url: resolveAssetUrl(req, d.url),
+                    width: Number(d.width || 0) || undefined,
+                    height: Number(d.height || 0) || undefined,
+                    format: d.format || '',
+                    variants,
                     contentType: d.contentType || '',
                     size: Number(d.size || 0),
                     originalName: d.originalName || '',
@@ -61,10 +63,27 @@ router.get('/list', authenticateAdmin, requireAdmin, async (req, res) => {
     }
 });
 
+/** Absolute variant URL map { slot: { avif, webp, width } } from an uploads doc. */
+function buildVariantMap(req, doc) {
+    const variants = Array.isArray(doc && doc.variants) ? doc.variants : [];
+    if (variants.length === 0) return undefined;
+    const map = {};
+    for (const v of variants) {
+        const slot = Number(v && v.slot);
+        const key = String(v && v.key || '');
+        const format = String(v && v.format || '');
+        if (!Number.isInteger(slot) || !key || !isSafeKey(key) || !format) continue;
+        map[slot] = map[slot] || { slot, width: Number(v.width) || slot };
+        map[slot][format] = absoluteUrl(req, proxyPathFor(key));
+    }
+    return Object.keys(map).length ? map : undefined;
+}
+
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB limit
+        // Raise the previous fixed 5MB cap to the configurable application limit.
+        fileSize: LIMITS.maxUploadMb * 1024 * 1024,
     },
     fileFilter: (req, file, cb) => {
         const mime = String(file?.mimetype || '').toLowerCase();
@@ -77,6 +96,7 @@ const upload = multer({
             'image/png',
             'image/gif',
             'image/webp',
+            'image/avif',
             'image/bmp',
             'image/svg+xml',
             'image/x-icon',
@@ -88,6 +108,7 @@ const upload = multer({
             '.png',
             '.gif',
             '.webp',
+            '.avif',
             '.bmp',
             '.svg',
             '.ico',
@@ -100,143 +121,121 @@ const upload = multer({
         } else {
             cb(new Error('Only image files are allowed'));
         }
-    }
+    },
 });
 
-router.post('/admin-image', authenticateAdmin, requireAdmin, upload.single('image'), async (req, res) => {
+/** Safe folder from query, defaulting to 'misc'. */
+function safeFolder(req) {
+    const folder = String(req.query?.folder ?? '').trim();
+    return folder && /^[a-zA-Z0-9_-]+$/.test(folder) ? folder : 'misc';
+}
+
+/** Shared upload handler for admin + public image uploads. */
+async function handleImageUpload(req, res) {
     try {
-        if (!AWS_REGION || !AWS_S3_BUCKET) {
-            return res.status(500).json({
-                success: false,
-                message: 'Missing AWS configuration (AWS_REGION, AWS_S3_BUCKET)'
-            });
-        }
-
         if (!req.file) {
-            return res.status(400).json({
-                success: false,
-                message: 'No image file provided'
-            });
+            return res.status(400).json({ success: false, message: 'No image file provided' });
         }
 
-        const ext = (req.file.originalname || '').split('.').pop() || 'bin';
-        const random = crypto.randomBytes(12).toString('hex');
-        const folder = String(req.query?.folder ?? '').trim();
-        const folderSafe = folder && /^[a-zA-Z0-9_-]+$/.test(folder) ? folder : 'misc';
-        const key = `uploads/${folderSafe}/${Date.now()}-${random}.${ext}`;
-
-        await s3.send(
-            new PutObjectCommand({
-                Bucket: AWS_S3_BUCKET,
-                Key: key,
-                Body: req.file.buffer,
-                ContentType: req.file.mimetype,
-            })
-        );
-
-        const imageUrl = `https://${AWS_S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${key}`;
-
-        const saved = await Upload.create({
-            key,
-            url: imageUrl,
-            bucket: AWS_S3_BUCKET,
-            region: AWS_REGION,
-            contentType: req.file.mimetype,
-            size: req.file.size,
+        const result = await processAndStoreImage({
+            buffer: req.file.buffer,
+            mimetype: req.file.mimetype,
             originalName: req.file.originalname,
+            folder: safeFolder(req),
+            req,
         });
 
-        res.json({
-            success: true,
-            message: 'Image uploaded successfully',
-            id: String(saved._id),
-            key: saved.key,
-            url: saved.url,
-            bucket: saved.bucket,
-            region: saved.region,
-            originalname: saved.originalName,
-            size: saved.size,
-            contentType: saved.contentType,
-        });
+        return res.json({ success: true, message: 'Image uploaded successfully', ...result });
     } catch (error) {
-        console.error('Upload error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to upload image: ' + error.message
-        });
+        if (error && error.statusCode) {
+            return res.status(error.statusCode).json({ success: false, message: error.message });
+        }
+        const status = error?.$metadata?.httpStatusCode;
+        console.error('Upload error:', { operation: 'putObject', status: status || 500, code: error?.name, reason: error?.message });
+        res.status(500).json({ success: false, message: 'Failed to upload image' });
     }
-});
+}
 
-// POST /api/upload/image - Upload image
-router.post('/image', upload.single('image'), async (req, res) => {
+// POST /api/upload/admin-image - Admin image upload
+router.post('/admin-image', authenticateAdmin, requireAdmin, upload.single('image'), handleImageUpload);
+
+// POST /api/upload/image - Public image upload (e.g. review images)
+router.post('/image', upload.single('image'), handleImageUpload);
+
+// GET /api/upload/file/* - Serve private objects.
+//   Immutable optimized variants (uploads/<folder>/<id>/<slot>.avif|webp) are
+//   STREAMED server-side with long-lived immutable caching so the browser can
+//   reuse them across requests.
+//   Everything else (originals, legacy objects like `image.png`) keeps the
+//   legacy behavior: fresh presigned GET -> 302 redirect -> private B2.
+// Credentials never reach the browser; signed URLs are not logged.
+router.get('/file/*', async (req, res) => {
     try {
-        if (!AWS_REGION || !AWS_S3_BUCKET) {
-            return res.status(500).json({
-                success: false,
-                message: 'Missing AWS configuration (AWS_REGION, AWS_S3_BUCKET)'
-            });
+        const rawKey = String(req.params[0] ?? '');
+        const key = decodeURIComponent(rawKey);
+
+        if (!isSafeKey(key)) {
+            return res.status(400).json({ success: false, message: 'Invalid file key' });
         }
 
-        if (!req.file) {
-            return res.status(400).json({
-                success: false,
-                message: 'No image file provided'
+        if (isVariantObjectKey(key)) {
+            // Immutable optimized variant: stream bytes with immutable caching.
+            const { body, contentLength, etag } = await getObjectStream(key);
+            const extDot = String(key).toLowerCase().match(/\.([a-z0-9]+)$/);
+            const contentType = extDot ? EXT_MIME['.' + extDot[1]] : undefined;
+            res.status(200);
+            res.setHeader('Content-Type', contentType || 'application/octet-stream');
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+            // Variants are served cross-origin to the storefront/admin (frontends
+            // live on a different origin than the API), so relax Helmet's default
+            // CORP on this route only — exactly like the legacy 302 path below.
+            res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+            if (contentLength) res.setHeader('Content-Length', String(contentLength));
+            if (etag) res.setHeader('ETag', String(etag));
+            body.on('error', () => {
+                try {
+                    res.destroy();
+                } catch (_e) {
+                    /* ignore */
+                }
             });
+            body.pipe(res);
+            return;
         }
 
-        const ext = (req.file.originalname || '').split('.').pop() || 'bin';
-        const random = crypto.randomBytes(12).toString('hex');
-        const folder = String(req.query?.folder ?? '').trim();
-        const folderSafe = folder && /^[a-zA-Z0-9_-]+$/.test(folder) ? folder : 'misc';
-        const key = `uploads/${folderSafe}/${Date.now()}-${random}.${ext}`;
+        // Legacy / original: 302 to a fresh presigned GET.
+        const signedUrl = await getSignedDownloadUrl(key);
 
-        await s3.send(
-            new PutObjectCommand({
-                Bucket: AWS_S3_BUCKET,
-                Key: key,
-                Body: req.file.buffer,
-                ContentType: req.file.mimetype,
-            })
-        );
+        // Private, non-cacheable so the short-lived URL is not persisted by
+        // intermediate caches after it expires.
+        res.setHeader('Cache-Control', 'private, no-store');
 
-        const imageUrl = `https://${AWS_S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${key}`;
-
-        const saved = await Upload.create({
-            key,
-            url: imageUrl,
-            bucket: AWS_S3_BUCKET,
-            region: AWS_REGION,
-            contentType: req.file.mimetype,
-            size: req.file.size,
-            originalName: req.file.originalname,
-        });
-
-        res.json({
-            success: true,
-            message: 'Image uploaded successfully',
-            id: String(saved._id),
-            key: saved.key,
-            url: saved.url,
-            bucket: saved.bucket,
-            region: saved.region,
-            originalname: saved.originalName,
-            size: saved.size,
-            contentType: saved.contentType,
-        });
+        // Helmet's default `Cross-Origin-Resource-Policy: same-origin` would
+        // make Chromium block this redirect when the frontend lives on a
+        // different origin than the API (e.g. admin at :8080, API at :5000):
+        // cross-origin no-cors image loads are rejected with
+        // `net::ERR_BLOCKED_BY_RESPONSE.NotSameOrigin` before the redirect is
+        // even followed. This route exists precisely to serve the private
+        // object cross-origin (the presigned URL stays server-side and is
+        // never exposed to the page), so relax CORP to `cross-origin` for this
+        // redirect response only. Every other route keeps Helmet's policy.
+        res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+        return res.redirect(302, signedUrl);
     } catch (error) {
-        console.error('Upload error:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to upload image: ' + error.message
-        });
+        const status = error?.$metadata?.httpStatusCode;
+        console.error('Signed download error:', { operation: 'getObject', status: status || 500, code: error?.name });
+        if (status === 404 || status === 403) {
+            return res.status(404).json({ success: false, message: 'File not found' });
+        }
+        return res.status(500).json({ success: false, message: 'Failed to load file' });
     }
 });
 
-// GET /api/uploads/:filename - Serve uploaded files
+// GET /api/uploads/:filename - Legacy local file serving (disabled).
 router.get('/uploads/:filename', (req, res) => {
     res.status(410).json({
         success: false,
-        message: 'Local file serving is disabled. Use the returned S3 url/key.'
+        message: 'Local file serving is disabled. Use the returned proxy URL.'
     });
 });
 

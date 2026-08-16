@@ -2,16 +2,17 @@ const express = require('express');
 const router = express.Router();
 
 const { getOrCreateContentSettings } = require('../models/contentSettings');
+const { resolveAssetUrl } = require('../config/storage');
 
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
     const settings = await getOrCreateContentSettings();
 
     res.json({
       success: true,
       data: {
-        brandLogoUrl: settings.brandLogoUrl,
-        defaultAvatarUrl: settings.defaultAvatarUrl,
+        brandLogoUrl: resolveAssetUrl(req, settings.brandLogoUrl),
+        defaultAvatarUrl: resolveAssetUrl(req, settings.defaultAvatarUrl),
         bioMaxLength: settings.bioMaxLength,
         showOrderHistory: settings.showOrderHistory,
         showWishlistCount: settings.showWishlistCount,

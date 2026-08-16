@@ -2,8 +2,9 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const { authenticateAdmin, requireAdmin } = require('../middleware/adminAuth');
+const { resolveAssetUrl } = require('../config/storage');
 
-function mapProduct(p) {
+function mapProduct(p, req) {
     return {
         _id: String(p._id),
         id: String(p._id),
@@ -14,8 +15,10 @@ function mapProduct(p) {
         price: p.price,
         stock: p.stock,
         status: p.status,
-        image: p.image,
-        galleryImages: p.galleryImages,
+        image: resolveAssetUrl(req, p.image),
+        galleryImages: Array.isArray(p.galleryImages)
+            ? p.galleryImages.map((i) => resolveAssetUrl(req, i)).filter(Boolean)
+            : p.galleryImages,
         category: p.category,
         description: p.description,
         featured: p.featured,
@@ -55,26 +58,37 @@ router.get('/', authenticateAdmin, requireAdmin, async (req, res) => {
         }
 
         if (search) {
-            const searchRegex = new RegExp(search, 'i');
+            const rx = new RegExp(String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
             filter.$or = [
-                { name: searchRegex },
-                { description: searchRegex },
-                { sku: searchRegex },
-                { brand: searchRegex }
+                { name: rx },
+                { description: rx },
+                { sku: rx },
+                { brand: rx }
             ];
         }
 
         // Pagination
         const pageNum = parseInt(page);
-        const limitNum = parseInt(limit);
+        const limitNum = Math.min(100, parseInt(limit));
         const skip = (pageNum - 1) * limitNum;
 
+        // Projection — the admin grid needs top-level fields only; never the
+        // management blob / reviews / questions for a grid listing.
+        const ADMIN_PROJECTION = {
+            _id: 1, slug: 1, visibility: 1, name: 1, sku: 1, price: 1, stock: 1, status: 1,
+            image: 1, galleryImages: 1, category: 1, description: 1, featured: 1,
+            createdAt: 1, updatedAt: 1, sizes: 1, colors: 1, colorVariants: 1, variants: 1,
+            tags: 1, keyFeatures: 1, warranty: 1, warrantyDetails: 1, saleEnabled: 1,
+            saleDiscount: 1, saleStartDate: 1, saleEndDate: 1, metaTitle: 1, metaDescription: 1,
+            weight: 1, dimensions: 1, badge: 1, brand: 1,
+        };
+
         const [products, total] = await Promise.all([
-            db.collection('products').find(filter).sort({ createdAt: -1 }).skip(skip).limit(limitNum).toArray(),
+            db.collection('products').find(filter, { projection: ADMIN_PROJECTION }).sort({ createdAt: -1 }).skip(skip).limit(limitNum).toArray(),
             db.collection('products').countDocuments(filter)
         ]);
 
-        const mappedProducts = products.map(mapProduct);
+        const mappedProducts = products.map((p) => mapProduct(p, req));
 
         res.json({
             success: true,
@@ -112,7 +126,7 @@ router.get('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
 
         res.json({
             success: true,
-            product: mapProduct(product)
+            product: mapProduct(product, req)
         });
     } catch (error) {
         console.error('Error fetching product:', error);
@@ -147,7 +161,7 @@ router.post('/', authenticateAdmin, requireAdmin, async (req, res) => {
         res.status(201).json({
             success: true,
             message: 'Product created successfully',
-            product: mapProduct({ ...newProduct, _id: result.insertedId })
+            product: mapProduct({ ...newProduct, _id: result.insertedId }, req)
         });
     } catch (error) {
         console.error('Error creating product:', error);
@@ -186,7 +200,7 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         res.json({
             success: true,
             message: 'Product updated successfully',
-            product: mapProduct(updatedProduct)
+            product: mapProduct(updatedProduct, req)
         });
     } catch (error) {
         console.error('Error updating product:', error);

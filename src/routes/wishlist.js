@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 
 // JWT Secret
 const JWT_SECRET = require('../config').jwtSecret;
+const { resolveAssetUrl } = require('../config/storage');
 
 function safeVariantValue(v) {
     if (typeof v !== 'string') return '';
@@ -42,6 +43,19 @@ const WishlistSchema = new mongoose.Schema({
 
 const Wishlist = mongoose.models.Wishlist || mongoose.model('Wishlist', WishlistSchema);
 
+function serializeWishlist(req, wishlist) {
+    const w = wishlist.toObject ? wishlist.toObject() : wishlist;
+    return {
+        ...w,
+        items: (w.items || []).map((item) => {
+            const product = item?.product && typeof item.product === 'object'
+                ? { ...item.product, image: resolveAssetUrl(req, item.product.image) }
+                : item.product;
+            return { ...item, product };
+        }),
+    };
+}
+
 // Get user's wishlist
 router.get('/', authenticateToken, async (req, res) => {
     try {
@@ -54,7 +68,7 @@ router.get('/', authenticateToken, async (req, res) => {
             return res.json({ items: [] });
         }
 
-        res.json(wishlist);
+        res.json(serializeWishlist(req, wishlist));
     } catch (error) {
         console.error('Failed to fetch wishlist:', error);
         res.status(500).json({ error: 'Failed to fetch wishlist' });
@@ -98,7 +112,7 @@ router.post('/add', authenticateToken, async (req, res) => {
             const updatedWishlist = await Wishlist.findById(wishlist._id)
                 .populate('items.product', 'name price image sku stock');
 
-            return res.json(updatedWishlist);
+            return res.json(serializeWishlist(req, updatedWishlist));
         }
 
         // Add item to wishlist
@@ -114,7 +128,7 @@ router.post('/add', authenticateToken, async (req, res) => {
         const updatedWishlist = await Wishlist.findById(wishlist._id)
             .populate('items.product', 'name price image sku stock');
 
-        res.json(updatedWishlist);
+        res.json(serializeWishlist(req, updatedWishlist));
     } catch (error) {
         console.error('Failed to add to wishlist:', error);
         res.status(500).json({ error: 'Failed to add to wishlist' });
@@ -144,7 +158,7 @@ router.delete('/remove/:productId', authenticateToken, async (req, res) => {
         const updatedWishlist = await Wishlist.findById(wishlist._id)
             .populate('items.product', 'name price image sku stock');
 
-        res.json(updatedWishlist);
+        res.json(serializeWishlist(req, updatedWishlist));
     } catch (error) {
         console.error('Failed to remove from wishlist:', error);
         res.status(500).json({ error: 'Failed to remove from wishlist' });

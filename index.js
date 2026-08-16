@@ -41,6 +41,7 @@ const notificationsRouter = require('./src/routes/notifications');
 const shiprocketDataRouter = require('./src/routes/shiprocketData');
 const shiprocketSyncRouter = require('./src/routes/shiprocketSync');
 const feedRouter = require('./src/routes/feed');
+const searchRouter = require('./src/routes/search');
 const metaCapiRouter = require('./src/routes/metaCapiSdk.routes');
 const adminCampaignsRouter = require('./src/routes/admin-campaigns');
 const adminMetaConfigRouter = require('./src/routes/admin-meta-config');
@@ -227,6 +228,7 @@ app.use('/api/auth/admin', adminAuthRouter);
 app.use('/api/auth/user', userAuthRouter);
 app.use('/api/auth', authRouter); // Keep for backward compatibility
 app.use('/api/content-settings', contentSettingsRouter);
+app.use('/api/search', searchRouter);
 app.use('/api/wishlist', wishlistRouter);
 app.use('/api/cart', cartRouter);
 app.use('/api/payments', paymentsRouter);

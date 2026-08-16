@@ -5,6 +5,7 @@
 
 const express = require('express');
 const mongoose = require('mongoose');
+const { resolveAssetUrl } = require('../config/storage');
 const router = express.Router();
 
 // Escape CSV special characters
@@ -21,13 +22,15 @@ function escapeCSV(value) {
 // Build absolute URL for product images
 function getAbsoluteUrl(req, path) {
     if (!path || typeof path !== 'string') return '';
-    if (path.startsWith('http://') || path.startsWith('https://')) return path;
+    const resolved = resolveAssetUrl(req, path);
+    if (!resolved) return '';
+    if (resolved.startsWith('http://') || resolved.startsWith('https://')) return resolved;
     const host = req.get('host') || 'trozzi.in';
     const protocol = req.protocol || 'https';
-    if (path.startsWith('/')) {
-        return `${protocol}://${host}${path}`;
+    if (resolved.startsWith('/')) {
+        return `${protocol}://${host}${resolved}`;
     }
-    return `${protocol}://${host}/${path}`;
+    return `${protocol}://${host}/${resolved}`;
 }
 
 // Generate CSV content from products

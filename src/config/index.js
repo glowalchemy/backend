@@ -88,4 +88,9 @@ module.exports = {
   // Additional validation for critical services
   userFrontendUrl: String(env.USER_FRONTEND_URL || 'http://localhost:3000'),
   adminFrontendUrl: String(env.ADMIN_FRONTEND_URL || 'http://localhost:8080'),
+  // Catalog/search tuning (all optional; safe defaults below)
+  catalogCacheTtlSeconds: Number(env.CATALOG_CACHE_TTL_SECONDS || 15),
+  searchAutocompleteMinChars: Number(env.SEARCH_AUTOCOMPLETE_MIN_CHARS || 3),
+  searchCandidateCap: Number(env.SEARCH_CANDIDATE_CAP || 150),
+  catalogPageSizeMax: Number(env.CATALOG_PAGE_SIZE_MAX || 100),
 };

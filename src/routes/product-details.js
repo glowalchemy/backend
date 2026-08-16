@@ -1,24 +1,13 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { ProductModel } = require('../models/product');
+const { resolveAssetUrl } = require('../config/storage');
+const { resolveMediaForValues } = require('../services/imageMedia');
 
 const router = express.Router();
 
-const AWS_REGION = process.env.AWS_REGION;
-const AWS_S3_BUCKET = process.env.AWS_S3_BUCKET;
-
 function toAbsoluteUrl(req, url) {
-  const value = String(url ?? '').trim();
-  if (!value) return '';
-  if (/^https?:\/\//i.test(value)) return value;
-  if (value.startsWith('/')) {
-    const proto = req.headers['x-forwarded-proto'] || req.protocol;
-    return `${proto}://${req.get('host')}${value}`;
-  }
-  if (/^uploads\//i.test(value) && AWS_REGION && AWS_S3_BUCKET) {
-    return `https://${AWS_S3_BUCKET}.s3.${AWS_REGION}.amazonaws.com/${value}`;
-  }
-  return value;
+  return resolveAssetUrl(req, url);
 }
 
 function safeString(v, maxLen = 1000) {
@@ -110,26 +99,96 @@ router.get('/:productId/details', async (req, res) => {
       return res.status(404).json({ message: 'Product not found' });
     }
 
+    // Authoritative inventory: management.inventory.stockQuantity with a
+    // fallback to the product-level stock field — identical precedence to the
+    // catalog API (simple-products.js) so listing and PDP never disagree.
+    const inventory = product.management && product.management.inventory ? product.management.inventory : null;
+    const stockQty = Number(inventory?.stockQuantity ?? NaN);
+    const stock = Number.isFinite(stockQty) ? stockQty : Number(product.stock ?? 0) || 0;
+
     const colorVariantsRaw = Array.isArray(product.colorVariants) ? product.colorVariants : [];
     const colorVariants = colorVariantsRaw.map((v) => ({
       ...v,
       images: Array.isArray(v?.images) ? v.images.map((img) => toAbsoluteUrl(req, img)).filter(Boolean) : [],
     }));
 
+    // Responsive media metadata: resolve every stored image reference once and
+    // attach variants/dimensions so the PDP can render <picture>/srcset.
+    const managementMedia = (product.management && product.management.media && Array.isArray(product.management.media.images)
+      ? product.management.media.images
+      : []);
+    const storedPrimary = String(product.image || '').trim();
+    const imageValues = [
+      storedPrimary,
+      ...(Array.isArray(product.galleryImages) ? product.galleryImages.map(String).filter(Boolean) : []),
+      ...managementMedia.map((i) => String(i?.url || '').trim()).filter(Boolean),
+    ].filter(Boolean);
+    const resolvedImages = await resolveMediaForValues(req, imageValues);
+    const resolvedByValue = new Map();
+    imageValues.forEach((v, idx) => {
+      if (resolvedImages[idx]) resolvedByValue.set(v, resolvedImages[idx]);
+    });
+
+    const primaryResolved = storedPrimary ? resolvedByValue.get(storedPrimary) : null;
+    const image = primaryResolved ? primaryResolved.url : toAbsoluteUrl(req, storedPrimary);
+    const imageMedia = primaryResolved
+      ? {
+          url: primaryResolved.url,
+          variants: primaryResolved.variants,
+          width: primaryResolved.width,
+          height: primaryResolved.height,
+        }
+      : null;
+
+    const media = managementMedia
+      .map((img) => {
+        const raw = String(img?.url || '').trim();
+        const m = raw ? resolvedByValue.get(raw) : null;
+        return {
+          id: img?.id || '',
+          alt: String(img?.alt || '').trim(),
+          url: m ? m.url : toAbsoluteUrl(req, raw),
+          variants: m ? m.variants : null,
+          width: m ? m.width : null,
+          height: m ? m.height : null,
+        };
+      })
+      .filter((e) => e.url);
+
     return res.json({
       id: String(product._id),
       _id: String(product._id),
+      slug: product.slug,
+      visibility: product.visibility,
+      status: product.status,
+      sku: product.sku,
       name: product.name,
       description: product.description,
       descriptionHtml: (product && product.management && product.management.basic && typeof product.management.basic.descriptionHtml === 'string')
         ? product.management.basic.descriptionHtml
         : '',
       price: product.price,
-      image: toAbsoluteUrl(req, product.image),
-      galleryImages: (product.galleryImages || []).map((img) => toAbsoluteUrl(req, img)).filter(Boolean),
-      brand: product.brand,
+      originalPrice: product.originalPrice || (product.management && product.management.pricing ? (product.management.pricing.originalPrice || 0) : 0),
+      image,
+      imageMedia,
+      media,
+      galleryImages: (product.galleryImages || [])
+        .map((img) => {
+          const resolved = resolvedByValue.get(String(img).trim());
+          return resolved ? resolved.url : toAbsoluteUrl(req, img);
+        })
+        .filter(Boolean),
+      brand: (product.management && product.management.basic && typeof product.management.basic.brand === 'string' && product.management.basic.brand.trim())
+        ? product.management.basic.brand.trim()
+        : (product.brand || ''),
+      codAvailable: typeof product.codAvailable === 'boolean' ? product.codAvailable : Boolean(product.management && product.management.shipping && product.management.shipping.codAvailable),
+      codCharge: Number(product?.codCharge ?? (product.management && product.management.shipping ? product.management.shipping.codCharge : 0) ?? 0) || 0,
+      // Full management doc (product's own data, already returned publicly by the
+      // catalog API) so the PDP can render real specs, returns and shipping
+      // without a second product request.
+      management: product.management,
       category: product.category,
-      stock: product.stock,
+      stock,
       rating: product.rating || 0,
       reviews: Array.isArray(product.reviews) ? product.reviews.length : 0,
       questions: Array.isArray(product.questions) ? product.questions.length : 0,

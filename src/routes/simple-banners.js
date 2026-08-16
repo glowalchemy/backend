@@ -1,6 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const Banner = require('../models/banner');
+const { resolveAssetUrl } = require('../config/storage');
+
+function serializeBanner(req, banner) {
+    const b = banner.toObject ? banner.toObject() : banner;
+    return { ...b, image: resolveAssetUrl(req, b.image) };
+}
 
 // GET /api/banners - Get banners by position
 router.get('/', async (req, res) => {
@@ -23,7 +29,7 @@ router.get('/', async (req, res) => {
 
             return res.json({
                 success: true,
-                banners: activeBanners
+                banners: activeBanners.map((b) => serializeBanner(req, b))
             });
         }
 
@@ -43,17 +49,18 @@ router.get('/', async (req, res) => {
         if (!shouldGroup) {
             return res.json({
                 success: true,
-                banners: allBanners
+                banners: allBanners.map((b) => serializeBanner(req, b))
             });
         }
 
         // Group banners by position
         const groupedBanners = {};
         allBanners.forEach(banner => {
-            if (!groupedBanners[banner.position]) {
-                groupedBanners[banner.position] = [];
+            const serialized = serializeBanner(req, banner);
+            if (!groupedBanners[serialized.position]) {
+                groupedBanners[serialized.position] = [];
             }
-            groupedBanners[banner.position].push(banner);
+            groupedBanners[serialized.position].push(serialized);
         });
 
         res.json({
