@@ -20,7 +20,6 @@ const generateToken = (adminId) => {
 // Admin Login
 router.post('/login', async (req, res) => {
   try {
-    console.log('Admin login request:', req.body);
     const { email, password } = req.body;
 
     // Validate required fields
@@ -32,9 +31,7 @@ router.post('/login', async (req, res) => {
     }
 
     // Find admin (include password field)
-    console.log('Finding admin with email:', email);
     const admin = await AdminModel.findOne({ email }).select('+password');
-    console.log('Admin found:', !!admin);
     if (!admin) {
       console.log('Admin not found in database');
       return res.status(401).json({ 
@@ -52,11 +49,8 @@ router.post('/login', async (req, res) => {
     }
 
     // Verify password
-    console.log('Comparing password');
     const isPasswordValid = await admin.comparePassword(password);
-    console.log('Password valid:', isPasswordValid);
     if (!isPasswordValid) {
-      console.log('Password comparison failed');
       return res.status(401).json({ 
         success: false,
         error: 'Invalid admin credentials' 

@@ -424,4 +424,25 @@ cron.schedule('*/10 * * * *', async () => {
   }
 });
 
+// Graceful shutdown
+const gracefulShutdown = async (signal) => {
+  console.log(`\n${signal} received. Shutting down gracefully...`);
+  try {
+    // Stop accepting new connections
+    // Close MongoDB connection
+    await mongoose.connection.close(false);
+    console.log('MongoDB connection closed.');
+  } catch (e) {
+    console.error('Error during shutdown:', e);
+  }
+  process.exit(0);
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 module.exports = app;

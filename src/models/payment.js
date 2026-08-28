@@ -1,3 +1,4 @@
+// cspell:ignore phonepe paytm
 const mongoose = require('mongoose');
 
 // Minimal Payment schema for JS runtime (mirrors src/models/payment.ts + fields used in routes/payments.js)

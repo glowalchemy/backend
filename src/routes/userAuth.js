@@ -63,16 +63,13 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    // Hash password
-    const bcrypt = require('bcryptjs');
-    const hashedPassword = await bcrypt.hash(password, 10);
-
     // Create user (NEVER allow admin role here)
+    // Password is hashed by the Mongoose pre('save') hook — do NOT hash here
     const user = new UserModel({
       firstName,
       lastName,
       email,
-      password: hashedPassword,
+      password,
       phone,
       role: 'user', // Force user role
       active: true,

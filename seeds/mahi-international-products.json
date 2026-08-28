@@ -1,0 +1,351 @@
+[
+  {
+    "sku": "MAHI-HAIR-SPRAY-ROSEMARY-200ML",
+    "title": "Rosemaryy Water Spray For Hair Growth (200 ml) | Hair Spray for Regrowth | Rosemaryy Hair Mist Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "name": "Rosemaryy Water Spray For Hair Growth (200 ml) | Hair Spray for Regrowth | Rosemaryy Hair Mist Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "selling_price": 399,
+    "mrp": 399,
+    "price": 399,
+    "original_price": 399,
+    "qty": 50,
+    "stock": 50,
+    "quantity": 50,
+    "brand": "MAHI INTERNATIONAL STORE",
+    "category": "Beauty & Personal Care",
+    "category_name": "Beauty & Personal Care",
+    "subcategory": "Hair Care",
+    "sub_category": "Hair Care",
+    "subcategory_name": "Hair Care",
+    "description": "Rosemaryy Water Spray for Hair Growth (200 ml) — hair spray for regrowth that helps reduce hair fall and strengthens hair. Suitable for all hair types. Promotes hair growth and density while making hair shiny and frizz-free.",
+    "short_description": "Rosemaryy Water Spray for Hair Growth (200 ml) — hair spray for regrowth that helps reduce hair fall and strengthens hair. Suitable for all hair types.",
+    "status": "active",
+    "tags": "rosemaryy,hair growth spray,hair fall,hair mist,hair care",
+    "weight_kg": 0.2,
+    "weight": 0.2,
+    "length_cm": 6,
+    "length": 6,
+    "width_cm": 6,
+    "width": 6,
+    "height_cm": 15,
+    "height": 15,
+    "free_shipping": false,
+    "cod": true,
+    "codAvailable": true,
+    "cod_charge": 0,
+    "shipping_charge": 0,
+    "source_id": "MAHI-HAIR-SPRAY-ROSEMARY-200ML",
+    "source": "meesho",
+    "attributes": [
+      {
+        "name": "Ideal For",
+        "values": ["Unisex"]
+      },
+      {
+        "name": "Net Quantity",
+        "values": ["1"]
+      },
+      {
+        "name": "Capacity",
+        "values": ["200ml"]
+      },
+      {
+        "name": "Shelf life",
+        "values": ["24 Months"]
+      },
+      {
+        "name": "Hair Type",
+        "values": ["All type Of Hair"]
+      },
+      {
+        "name": "Generic Name",
+        "values": ["Cosmetics"]
+      },
+      {
+        "name": "Country of Origin",
+        "values": ["India"]
+      }
+    ],
+    "meta_title": "Rosemaryy Water Spray For Hair Growth (200 ml) — Hair Fall Control",
+    "meta_description": "Rosemaryy Water Spray for Hair Growth (200 ml) — helps reduce hairfall, strengthens hair, suitable for all hair types. Promotes hair growth and density."
+  },
+  {
+    "sku": "MAHI-HAIR-OIL-ROSEMARY-100ML",
+    "title": "Rosemaryy Hair Oil for Hair Growth (100 ml) | Hair Oil for Regrowth | Rosemaryy Hair Oil Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "name": "Rosemaryy Hair Oil for Hair Growth (100 ml) | Hair Oil for Regrowth | Rosemaryy Hair Oil Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "selling_price": 299,
+    "mrp": 349,
+    "price": 299,
+    "original_price": 349,
+    "qty": 30,
+    "stock": 30,
+    "quantity": 30,
+    "brand": "MAHI INTERNATIONAL STORE",
+    "category": "Beauty & Personal Care",
+    "category_name": "Beauty & Personal Care",
+    "subcategory": "Hair Care",
+    "sub_category": "Hair Care",
+    "subcategory_name": "Hair Care",
+    "description": "Rosemaryy Hair Oil for Hair Growth (100 ml) — hair oil for regrowth that helps reduce hair fall and strengthens hair. Suitable for all hair types. Nourishes hair roots and promotes healthy hair growth.",
+    "short_description": "Rosemaryy Hair Oil for Hair Growth (100 ml) — hair oil for regrowth that helps reduce hair fall and strengthens hair. Suitable for all hair types.",
+    "status": "active",
+    "discount_percent": 14,
+    "tags": "rosemaryy,hair oil,hair growth,hair fall,hair care",
+    "weight_kg": 0.15,
+    "weight": 0.15,
+    "length_cm": 5,
+    "length": 5,
+    "width_cm": 5,
+    "width": 5,
+    "height_cm": 12,
+    "height": 12,
+    "free_shipping": false,
+    "cod": true,
+    "codAvailable": true,
+    "cod_charge": 0,
+    "shipping_charge": 0,
+    "source_id": "MAHI-HAIR-OIL-ROSEMARY-100ML",
+    "source": "meesho",
+    "attributes": [
+      {
+        "name": "Ideal For",
+        "values": ["Unisex"]
+      },
+      {
+        "name": "Net Quantity",
+        "values": ["1"]
+      },
+      {
+        "name": "Capacity",
+        "values": ["100ml"]
+      },
+      {
+        "name": "Shelf life",
+        "values": ["24 Months"]
+      },
+      {
+        "name": "Hair Type",
+        "values": ["All type Of Hair"]
+      },
+      {
+        "name": "Generic Name",
+        "values": ["Cosmetics"]
+      },
+      {
+        "name": "Country of Origin",
+        "values": ["India"]
+      }
+    ],
+    "meta_title": "Rosemaryy Hair Oil for Hair Growth (100 ml) — Hair Fall Treatment",
+    "meta_description": "Rosemaryy Hair Oil for Hair Growth (100 ml) — helps reduce hairfall, strengthens hair, suitable for all hair types. Nourishes hair roots."
+  },
+  {
+    "sku": "MAHI-SHAMPOO-ROSEMARY-250ML",
+    "title": "Rosemaryy Anti-Hair Fall Shampoo (250 ml) | Hair Shampoo for Hair Growth | Rosemaryy Shampoo Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "name": "Rosemaryy Anti-Hair Fall Shampoo (250 ml) | Hair Shampoo for Hair Growth | Rosemaryy Shampoo Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "selling_price": 249,
+    "mrp": 299,
+    "price": 249,
+    "original_price": 299,
+    "qty": 40,
+    "stock": 40,
+    "quantity": 40,
+    "brand": "MAHI INTERNATIONAL STORE",
+    "category": "Beauty & Personal Care",
+    "category_name": "Beauty & Personal Care",
+    "subcategory": "Hair Care",
+    "sub_category": "Hair Care",
+    "subcategory_name": "Hair Care",
+    "description": "Rosemaryy Anti-Hair Fall Shampoo (250 ml) — hair shampoo for hair growth that helps reduce hair fall and strengthens hair. Suitable for all hair types. Gently cleanses while nourishing hair roots.",
+    "short_description": "Rosemaryy Anti-Hair Fall Shampoo (250 ml) — hair shampoo for hair growth that helps reduce hair fall and strengthens hair. Suitable for all hair types.",
+    "status": "active",
+    "discount_percent": 17,
+    "tags": "rosemaryy,shampoo,hair growth,hair fall,hair care",
+    "weight_kg": 0.25,
+    "weight": 0.25,
+    "length_cm": 7,
+    "length": 7,
+    "width_cm": 7,
+    "width": 7,
+    "height_cm": 18,
+    "height": 18,
+    "free_shipping": false,
+    "cod": true,
+    "codAvailable": true,
+    "cod_charge": 0,
+    "shipping_charge": 0,
+    "source_id": "MAHI-SHAMPOO-ROSEMARY-250ML",
+    "source": "meesho",
+    "attributes": [
+      {
+        "name": "Ideal For",
+        "values": ["Unisex"]
+      },
+      {
+        "name": "Net Quantity",
+        "values": ["1"]
+      },
+      {
+        "name": "Capacity",
+        "values": ["250ml"]
+      },
+      {
+        "name": "Shelf life",
+        "values": ["24 Months"]
+      },
+      {
+        "name": "Hair Type",
+        "values": ["All type Of Hair"]
+      },
+      {
+        "name": "Generic Name",
+        "values": ["Cosmetics"]
+      },
+      {
+        "name": "Country of Origin",
+        "values": ["India"]
+      }
+    ],
+    "meta_title": "Rosemaryy Anti-Hair Fall Shampoo (250 ml) — Hair Growth Shampoo",
+    "meta_description": "Rosemaryy Anti-Hair Fall Shampoo (250 ml) — helps reduce hairfall, strengthens hair, suitable for all hair types. Gently cleanses and nourishes."
+  },
+  {
+    "sku": "MAHI-CONDITIONER-ROSEMARY-250ML",
+    "title": "Rosemaryy Anti-Hair Fall Conditioner (250 ml) | Hair Conditioner for Hair Growth | Rosemaryy Conditioner Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "name": "Rosemaryy Anti-Hair Fall Conditioner (250 ml) | Hair Conditioner for Hair Growth | Rosemaryy Conditioner Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "selling_price": 249,
+    "mrp": 299,
+    "price": 249,
+    "original_price": 299,
+    "qty": 35,
+    "stock": 35,
+    "quantity": 35,
+    "brand": "MAHI INTERNATIONAL STORE",
+    "category": "Beauty & Personal Care",
+    "category_name": "Beauty & Personal Care",
+    "subcategory": "Hair Care",
+    "sub_category": "Hair Care",
+    "subcategory_name": "Hair Care",
+    "description": "Rosemaryy Anti-Hair Fall Conditioner (250 ml) — hair conditioner for hair growth that helps reduce hair fall and strengthens hair. Suitable for all hair types. Provides deep conditioning and smoothens hair texture.",
+    "short_description": "Rosemaryy Anti-Hair Fall Conditioner (250 ml) — hair conditioner for hair growth that helps reduce hair fall and strengthens hair. Suitable for all hair types.",
+    "status": "active",
+    "discount_percent": 17,
+    "tags": "rosemaryy,conditioner,hair growth,hair fall,hair care",
+    "weight_kg": 0.25,
+    "weight": 0.25,
+    "length_cm": 7,
+    "length": 7,
+    "width_cm": 7,
+    "width": 7,
+    "height_cm": 18,
+    "height": 18,
+    "free_shipping": false,
+    "cod": true,
+    "codAvailable": true,
+    "cod_charge": 0,
+    "shipping_charge": 0,
+    "source_id": "MAHI-CONDITIONER-ROSEMARY-250ML",
+    "source": "meesho",
+    "attributes": [
+      {
+        "name": "Ideal For",
+        "values": ["Unisex"]
+      },
+      {
+        "name": "Net Quantity",
+        "values": ["1"]
+      },
+      {
+        "name": "Capacity",
+        "values": ["250ml"]
+      },
+      {
+        "name": "Shelf life",
+        "values": ["24 Months"]
+      },
+      {
+        "name": "Hair Type",
+        "values": ["All type Of Hair"]
+      },
+      {
+        "name": "Generic Name",
+        "values": ["Cosmetics"]
+      },
+      {
+        "name": "Country of Origin",
+        "values": ["India"]
+      }
+    ],
+    "meta_title": "Rosemaryy Anti-Hair Fall Conditioner (250 ml) — Hair Growth Conditioner",
+    "meta_description": "Rosemaryy Anti-Hair Fall Conditioner (250 ml) — helps reduce hairfall, strengthens hair, suitable for all hair types. Deep conditioning formula."
+  },
+  {
+    "sku": "MAHI-HAIR-MASK-ROSEMARY-200G",
+    "title": "Rosemaryy Hair Mask for Hair Growth (200 g) | Hair Mask for Regrowth | Rosemaryy Hair Mask Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "name": "Rosemaryy Hair Mask for Hair Growth (200 g) | Hair Mask for Regrowth | Rosemaryy Hair Mask Helps Reduce Hairfall | Strengthens Hair | For All Hair Types",
+    "selling_price": 349,
+    "mrp": 399,
+    "price": 349,
+    "original_price": 399,
+    "qty": 25,
+    "stock": 25,
+    "quantity": 25,
+    "brand": "MAHI INTERNATIONAL STORE",
+    "category": "Beauty & Personal Care",
+    "category_name": "Beauty & Personal Care",
+    "subcategory": "Hair Care",
+    "sub_category": "Hair Care",
+    "subcategory_name": "Hair Care",
+    "description": "Rosemaryy Hair Mask for Hair Growth (200 g) — hair mask for regrowth that helps reduce hair fall and strengthens hair. Suitable for all hair types. Deep conditioning treatment for damaged hair.",
+    "short_description": "Rosemaryy Hair Mask for Hair Growth (200 g) — hair mask for regrowth that helps reduce hair fall and strengthens hair. Suitable for all hair types.",
+    "status": "active",
+    "discount_percent": 13,
+    "tags": "rosemaryy,hair mask,hair growth,hair fall,hair care",
+    "weight_kg": 0.2,
+    "weight": 0.2,
+    "length_cm": 8,
+    "length": 8,
+    "width_cm": 8,
+    "width": 8,
+    "height_cm": 10,
+    "height": 10,
+    "free_shipping": false,
+    "cod": true,
+    "codAvailable": true,
+    "cod_charge": 0,
+    "shipping_charge": 0,
+    "source_id": "MAHI-HAIR-MASK-ROSEMARY-200G",
+    "source": "meesho",
+    "attributes": [
+      {
+        "name": "Ideal For",
+        "values": ["Unisex"]
+      },
+      {
+        "name": "Net Quantity",
+        "values": ["1"]
+      },
+      {
+        "name": "Capacity",
+        "values": ["200g"]
+      },
+      {
+        "name": "Shelf life",
+        "values": ["24 Months"]
+      },
+      {
+        "name": "Hair Type",
+        "values": ["All type Of Hair"]
+      },
+      {
+        "name": "Generic Name",
+        "values": ["Cosmetics"]
+      },
+      {
+        "name": "Country of Origin",
+        "values": ["India"]
+      }
+    ],
+    "meta_title": "Rosemaryy Hair Mask for Hair Growth (200 g) — Deep Conditioning Treatment",
+    "meta_description": "Rosemaryy Hair Mask for Hair Growth (200 g) — helps reduce hairfall, strengthens hair, suitable for all hair types. Deep conditioning treatment."
+  }
+]

@@ -46,6 +46,7 @@ const corsOrigins = (() => {
   if (isProduction) {
     return [];
   }
+  // In development, allow localhost, 127.0.0.1, and common network IP ranges
   return [
     'http://localhost:3000',
     'http://localhost:5173',
@@ -57,6 +58,10 @@ const corsOrigins = (() => {
     'http://127.0.0.1:8080',
     'http://127.0.0.1:8081',
     'http://127.0.0.1:5000',
+    // Allow common network IP ranges for development
+    /^http:\/\/192\.168\.\d+\.\d+:\d+$/,
+    /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,
+    /^http:\/\/172\.(1[6-9]|2\d|3[01])\.\d+\.\d+:\d+$/,
   ];
 })();
 
@@ -64,7 +69,17 @@ const corsOrigins = (() => {
 // Same-origin requests (origin undefined) and allowlisted origins pass.
 function corsOriginCallback(origin, callback) {
   if (!origin) return callback(null, true);
+  
+  // Check for exact match
   if (corsOrigins.includes(origin)) return callback(null, true);
+  
+  // Check for regex patterns (for network IP ranges)
+  for (const allowed of corsOrigins) {
+    if (allowed instanceof RegExp && allowed.test(origin)) {
+      return callback(null, true);
+    }
+  }
+  
   return callback(new Error(`Origin ${origin} not allowed by CORS`));
 }
 

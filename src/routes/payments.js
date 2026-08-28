@@ -325,27 +325,6 @@ router.get('/methods', async (_req, res) => {
 });
 
 // GET /api/payments/stats (admin)
-router.get('/stats', async (req, res) => {
-  try {
-    const auth = await authenticateAny(req, res);
-    if (!auth) return;
-    if (auth.type !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Access denied' });
-    }
-
-    const db = mongoose.connection.db;
-    if (!db) {
-      return res.status(503).json({ success: false, message: 'Database not ready' });
-    }
-
-    const stats = await computeAdminPaymentStats(db);
-    return res.json({ success: true, data: stats });
-  } catch (e) {
-    console.error('Payments stats error:', e);
-    return res.status(500).json({ success: false, message: 'Failed to load payment stats' });
-  }
-});
-
 router.get('/phonepe/status/:merchantOrderId', authenticateToken, async (req, res) => {
   try {
     const merchantOrderId = String(req.params.merchantOrderId || '').trim();
@@ -901,95 +880,10 @@ function httpGetPhonePeJson({ baseUrl, path, headers }) {
   });
 }
 
-// Minimal Payment schema for JS runtime (mirrors src/models/payment.ts)
-const PaymentSchema = new mongoose.Schema(
-  {
-    order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', required: false },
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    provider: { type: String, enum: ['razorpay', 'phonepe', 'paytm', 'upi'], default: 'upi', required: true },
-    providerOrderId: { type: String, unique: true, sparse: true },
-    providerPaymentId: { type: String },
-    providerSignature: { type: String },
-    razorpayOrderId: { type: String, unique: true, sparse: true },
-    razorpayPaymentId: { type: String },
-    razorpaySignature: { type: String },
-    amount: { type: Number, required: true },
-    currency: { type: String, required: true, default: 'INR' },
-    status: { type: String, enum: ['pending', 'completed', 'failed', 'refunded'], default: 'pending' },
-    paymentMethod: { type: String, enum: ['razorpay', 'phonepe', 'paytm', 'upi'], default: 'upi' },
-    transactionId: { type: String },
-    paymentMode: { type: String },
-    providerStatus: { type: String },
-    paidAtIso: { type: String },
-    failedAtIso: { type: String },
-    refundedAtIso: { type: String },
-    eventHistory: { type: [mongoose.Schema.Types.Mixed], default: [] },
-    metadata: { type: mongoose.Schema.Types.Mixed, required: false },
-  },
-  { timestamps: true },
-);
-
-const Payment = mongoose.models.Payment || mongoose.model('Payment', PaymentSchema);
-
-// Minimal Order schema for JS runtime (mirrors src/models/order.ts)
-const OrderSchema = new mongoose.Schema(
-  {
-    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: false, index: true },
-    orderNumber: { type: String, required: true, unique: true },
-    status: {
-      type: String,
-      required: true,
-      enum: ['new', 'processing', 'paid', 'shipped', 'delivered', 'cancelled', 'returned'],
-      default: 'new',
-    },
-    currency: { type: String, required: true, default: 'INR' },
-    subtotal: { type: Number, required: true, default: 0 },
-    shipping: { type: Number, required: true, default: 0 },
-    tax: { type: Number, required: true, default: 0 },
-    total: { type: Number, required: true, default: 0 },
-    items: {
-      type: [
-        {
-          productId: { type: String, required: true },
-          name: { type: String, required: true },
-          price: { type: Number, required: true },
-          quantity: { type: Number, required: true },
-          image: { type: String, required: false },
-          color: { type: String, required: false },
-          size: { type: String, required: false },
-          selectedSize: { type: String, required: false, default: '' },
-          selectedColor: { type: String, required: false, default: '' },
-          selectedImage: { type: String, required: false, default: '' },
-        },
-      ],
-      required: true,
-      default: [],
-    },
-    customer: {
-      type: {
-        name: { type: String, required: true },
-        email: { type: String, required: true },
-        phone: { type: String, required: false },
-      },
-      required: true,
-    },
-    address: {
-      type: {
-        line1: { type: String, required: true },
-        line2: { type: String, required: false },
-        city: { type: String, required: true },
-        state: { type: String, required: true },
-        postalCode: { type: String, required: true },
-        country: { type: String, required: true },
-      },
-      required: true,
-    },
-    createdAtIso: { type: String, required: true },
-  },
-  { timestamps: true },
-);
-
-const Order = mongoose.models.Order || mongoose.model('Order', OrderSchema);
+// Use the canonical model definitions from models/ directory.
+// This avoids duplicate schemas and keeps a single source of truth.
+const { Payment } = require('../models/payment');
+const { Order } = require('../models/order');
 
 function authenticateToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -1586,121 +1480,299 @@ router.post('/create-order', authenticateToken, async (req, res) => {
 });
 
 // POST /api/payments/verify
+// SECURITY: This endpoint must NEVER trust frontend-provided status.
+// For PhonePe payments, it validates the actual payment state with PhonePe
+// server-side before marking the payment as completed.
 router.post('/verify', authenticateToken, async (req, res) => {
   try {
-    const { paymentId, status, orderData } = req.body;
-    
-    console.log('[VERIFY] Received:', { paymentId, status, hasOrderData: !!orderData, userId: req.userId });
-    console.log('[VERIFY] orderData:', JSON.stringify(orderData, null, 2));
+    const { paymentId } = req.body;
 
     if (!paymentId) return res.status(400).json({ error: 'paymentId is required' });
-    if (!['completed', 'failed'].includes(status)) {
-      return res.status(400).json({ error: 'Invalid status' });
-    }
 
     const payment = await Payment.findOne({ _id: paymentId, user: req.userId });
     if (!payment) {
-      console.log('[VERIFY] Payment not found:', paymentId);
       return res.status(404).json({ error: 'Payment not found' });
     }
-    
-    console.log('[VERIFY] Found payment:', { id: payment._id, status: payment.status, hasOrder: !!payment.order });
 
-    payment.status = status;
-
-    const nowIso = new Date().toISOString();
-
-    // Optional: create an order document if Order model exists and orderData provided
-    // IMPORTANT: For completed payments, mark order as paid so it shows up in admin paid filters.
-    
-    // Get orderData from request body OR from payment metadata (stored when payment was created)
-    let effectiveOrderData = orderData;
-    if (!effectiveOrderData && payment.metadata?.orderData) {
-      effectiveOrderData = payment.metadata.orderData;
-      console.log('[VERIFY] Using orderData from payment.metadata');
-    }
-    
-    console.log('[VERIFY] Check order creation:', { 
-      statusIsCompleted: status === 'completed', 
-      hasOrderData: !!effectiveOrderData, 
-      hasPaymentOrder: !!payment.order 
-    });
-    
-    if (status === 'completed' && effectiveOrderData && !payment.order) {
-      console.log('[VERIFY] Creating order...');
-      
-      const part = Math.random().toString(16).slice(2, 8).toUpperCase();
-      const orderNumber = `ORD-${Date.now().toString().slice(-6)}-${part}`;
-
-      const normalizedItems = await normalizeAndHydrateOrderItems(effectiveOrderData.items);
-      console.log('[VERIFY] Normalized items:', normalizedItems.length);
-
-      try {
-        const createdOrder = await Order.create({
-          user: new mongoose.Types.ObjectId(req.userId),
-          orderNumber,
-          status: 'paid',
-          currency: effectiveOrderData.currency || 'INR',
-          subtotal: Number(effectiveOrderData.subtotal ?? 0),
-          shipping: Number(effectiveOrderData.shipping ?? 0),
-          tax: Number(effectiveOrderData.tax ?? 0),
-          codCharge: Number(effectiveOrderData.codCharge ?? 0),
-          total: Number(effectiveOrderData.total ?? 0),
-          paymentMethod: String(effectiveOrderData.paymentMethod || payment.paymentMethod || payment.provider || 'upi'),
-          items: normalizedItems,
-          customer: effectiveOrderData.customer || {},
-          address: effectiveOrderData.address || {},
-          createdAtIso: nowIso,
-          statusHistory: [{ status: 'paid', at: nowIso, source: String(payment.provider || 'payment') }],
-          statusTimestamps: { paid: nowIso },
-        });
-        
-        payment.order = createdOrder._id;
-        console.log('[VERIFY] Order created successfully:', createdOrder._id, 'OrderNumber:', orderNumber);
-
-        // Adjust stock for webhook payment order
-        try {
-          const db = mongoose.connection.db;
-          if (db) {
-            const { adjustStockForOrderOnce } = require('./simple-orders');
-            await adjustStockForOrderOnce(db, createdOrder._id, normalizedItems);
-          }
-        } catch (e) {
-          console.error('Stock deduction error (Webhook Payment):', e);
-        }
-      } catch (orderError) {
-        console.error('[VERIFY] Order creation error:', orderError.message, orderError.stack);
-        throw orderError;
-      }
-    } else {
-      console.log('[VERIFY] Skipping order creation:', { 
-        statusNotCompleted: status !== 'completed',
-        noOrderData: !effectiveOrderData,
-        alreadyHasOrder: !!payment.order
+    // If already completed or has an order, return current state (idempotent)
+    if (payment.status === 'completed' && payment.order) {
+      const orderDetails = await Order.findById(payment.order).lean();
+      return res.json({
+        paymentId: String(payment._id),
+        status: payment.status,
+        provider: payment.provider,
+        orderId: String(payment.order),
+        orderNumber: orderDetails?.orderNumber || '',
+        order: orderDetails,
       });
     }
 
-    if (status === 'completed' && payment.order) {
+    // If already failed, return current state
+    if (payment.status === 'failed') {
+      return res.json({
+        paymentId: String(payment._id),
+        status: payment.status,
+        provider: payment.provider,
+        message: 'Payment has failed',
+      });
+    }
+
+    const nowIso = new Date().toISOString();
+    let verifiedStatus = 'pending';
+
+    // ── SERVER-SIDE PAYMENT VERIFICATION ──────────────────────────────────
+    // For PhonePe payments, call PhonePe API to get the REAL payment status.
+    // NEVER trust the frontend-reported status.
+    if (payment.provider === 'phonepe' && payment.providerOrderId) {
+      try {
+        const client = getPhonePeClient();
+        const providerResp = await client.getOrderStatus(payment.providerOrderId, true);
+        const providerState = String(
+          providerResp?.state || providerResp?.status || providerResp?.data?.state || ''
+        ).toUpperCase();
+
+        console.log('[VERIFY] PhonePe server-side verification:', {
+          providerOrderId: payment.providerOrderId,
+          providerState,
+        });
+
+        if (providerState === 'COMPLETED' || providerState === 'SUCCESS') {
+          verifiedStatus = 'completed';
+        } else if (providerState === 'FAILED') {
+          verifiedStatus = 'failed';
+        } else {
+          // PENDING, INITIATED, etc. — not yet confirmed
+          verifiedStatus = 'pending';
+        }
+
+        // Update payment with provider details from PhonePe verification
+        const paymentUpdate = {
+          status: verifiedStatus,
+          providerStatus: providerState,
+          updatedAt: new Date(),
+        };
+        if (verifiedStatus === 'completed') paymentUpdate.paidAtIso = payment.paidAtIso || nowIso;
+        if (verifiedStatus === 'failed') paymentUpdate.failedAtIso = payment.failedAtIso || nowIso;
+
+        await Payment.updateOne(
+          { _id: payment._id },
+          {
+            $set: paymentUpdate,
+            $push: {
+              eventHistory: {
+                provider: 'phonepe',
+                event: 'verify',
+                state: providerState,
+                at: nowIso,
+                merchantOrderId: payment.providerOrderId,
+                raw: providerResp,
+              },
+            },
+          },
+        );
+
+        payment.status = verifiedStatus;
+      } catch (e) {
+        console.error('[VERIFY] PhonePe status check failed:', e?.message || e);
+        // If PhonePe API fails, do NOT mark as completed — return pending
+        return res.status(502).json({
+          error: 'Payment verification with provider failed. Please retry.',
+          paymentId: String(payment._id),
+          status: payment.status,
+        });
+      }
+    } else {
+      // Non-PhonePe provider or no providerOrderId — cannot verify server-side
+      // Reject the request. All payment verifications MUST go through the
+      // provider's server-side API.
+      return res.status(400).json({
+        error: 'Cannot verify payment: no provider order ID available for server-side validation',
+        paymentId: String(payment._id),
+        status: payment.status,
+      });
+    }
+
+    // If payment is still pending after verification, inform the frontend
+    if (verifiedStatus !== 'completed') {
+      return res.json({
+        paymentId: String(payment._id),
+        status: payment.status,
+        provider: payment.provider,
+        message: verifiedStatus === 'failed'
+          ? 'Payment failed. Order is not placed.'
+          : 'Payment is still pending. Please wait and retry.',
+      });
+    }
+
+    // ── PAYMENT CONFIRMED — CREATE ORDER ──────────────────────────────────
+    // Only reached when PhonePe server-side verification confirms COMPLETED.
+
+    // Get orderData from payment metadata (stored at create-order time).
+    // NEVER trust orderData from the request body — amounts must be
+    // recalculated server-side.
+    const effectiveOrderData = payment.metadata?.orderData;
+    if (!effectiveOrderData) {
+      console.error('[VERIFY] No orderData in payment metadata:', payment._id);
+      return res.status(500).json({
+        error: 'Payment verified but order data not found. Contact support.',
+        paymentId: String(payment._id),
+        status: payment.status,
+      });
+    }
+
+    if (!payment.order) {
+      // ── SERVER-SIDE AMOUNT CALCULATION ────────────────────────────────
+      // Fetch products from database and recalculate all amounts.
+      // NEVER trust frontend-provided subtotal/shipping/tax/total.
+      const items = Array.isArray(effectiveOrderData.items) ? effectiveOrderData.items : [];
+      const productIds = items
+        .map((it) => String(it?.productId || '').trim())
+        .filter((id) => id && mongoose.Types.ObjectId.isValid(id));
+      const products = productIds.length
+        ? await ProductModel.find({ _id: { $in: productIds } })
+            .select({
+              price: 1, shippingCharge: 1, freeShipping: 1, weight: 1,
+              dimensions: 1, codAvailable: 1, codCharge: 1, management: 1,
+            })
+            .lean()
+        : [];
+      const productById = new Map(products.map((p) => [String(p._id), p]));
+
+      // Server-side calculation using shared utility
+      const {
+        subtotal: calcSubtotal,
+        shipping: calcShipping,
+        tax: calcTax,
+        total: calcTotal,
+        items: enrichedItems,
+      } = calculateOrderTotals(items, productById, {
+        isCod: false,
+        taxRate: 0.18,
+      });
+
+      // Amount mismatch detection — log and reject if frontend amount differs
+      // from server-calculated amount by more than 1 INR (rounding tolerance).
+      const frontendTotal = Number(effectiveOrderData.total ?? 0);
+      const amountDiff = Math.abs(calcTotal - frontendTotal);
+      if (amountDiff > 1) {
+        console.warn('[VERIFY] Amount mismatch detected:', {
+          paymentId: String(payment._id),
+          frontendTotal,
+          serverCalculated: calcTotal,
+          diff: amountDiff,
+        });
+        // Use server-calculated amount (trusted)
+      }
+
+      const part = Math.random().toString(16).slice(2, 8).toUpperCase();
+      const orderNumber = `ORD-${Date.now().toString().slice(-6)}-${part}`;
+
+      const createdOrder = await Order.create({
+        user: new mongoose.Types.ObjectId(req.userId),
+        orderNumber,
+        status: 'paid',
+        currency: effectiveOrderData.currency || 'INR',
+        subtotal: calcSubtotal,
+        shipping: calcShipping,
+        tax: calcTax,
+        codCharge: 0,
+        total: calcTotal,
+        paymentMethod: String(payment.paymentMethod || payment.provider || 'phonepe'),
+        items: enrichedItems,
+        customer: effectiveOrderData.customer || {},
+        address: effectiveOrderData.address || {},
+        createdAtIso: nowIso,
+        statusHistory: [{ status: 'paid', at: nowIso, source: 'phonepe' }],
+        statusTimestamps: { paid: nowIso },
+      });
+
+      payment.order = createdOrder._id;
+
+      // Deduct stock (idempotent via stockAdjustedAt guard)
+      try {
+        const db = mongoose.connection.db;
+        if (db) {
+          const { adjustStockForOrderOnce } = require('./simple-orders');
+          await adjustStockForOrderOnce(db, createdOrder._id, enrichedItems);
+        }
+      } catch (e) {
+        console.error('[VERIFY] Stock deduction error:', e);
+      }
+    }
+
+    // Mark order as paid (for both new and existing orders)
+    if (payment.order) {
       await Order.updateOne(
-        { _id: payment.order },
-        {
-          $set: { status: 'paid', paymentMethod: String(payment.paymentMethod || payment.provider || 'upi') },
-          $setOnInsert: { createdAtIso: nowIso },
-          $push: { statusHistory: { status: 'paid', at: nowIso, source: String(payment.provider || 'payment') } },
-          $set: { 'statusTimestamps.paid': nowIso },
+        { _id: payment.order },        {
+          $set: { status: 'paid', paymentMethod: String(payment.paymentMethod || payment.provider || 'phonepe') },
+          $setOnInsert: { createdAtIso: nowIso, 'statusTimestamps.paid': nowIso },
+          $push: { statusHistory: { status: 'paid', at: nowIso, source: 'phonepe' } },
         },
       );
     }
 
     await payment.save();
 
-    // Fetch order details if order was created/updated
+    // Create Shiprocket shipment (idempotent — skip if shipment exists)
+    if (payment.order) {
+      try {
+        const { Shipment } = require('../models/shipment');
+        const existingShipment = await Shipment.findOne({ order: payment.order }).lean();
+        if (!existingShipment) {
+          const updatedOrder = await Order.findById(payment.order);
+          if (updatedOrder) {
+            const { createShipmentForOrder } = require('../services/shiprocket.service');
+            const shiprocketResult = await createShipmentForOrder(updatedOrder, { paymentMethod: 'Prepaid' });
+            await Shipment.create({
+              order: updatedOrder._id,
+              shiprocketOrderId: String(shiprocketResult?.order_id || ''),
+              shiprocketShipmentId: String(shiprocketResult?.shipment_id || ''),
+              courierId: Number(shiprocketResult?.courier_id || 0) || 0,
+              awbNumber: String(shiprocketResult?.awb_code || ''),
+              courierName: String(shiprocketResult?.courier_name || ''),
+              status: 'new',
+              trackingUrl: shiprocketResult?.tracking_url || '',
+              estimatedDelivery: shiprocketResult?.estimated_delivery_days
+                ? new Date(Date.now() + Number(shiprocketResult.estimated_delivery_days) * 24 * 60 * 60 * 1000)
+                : null,
+              eventHistory: [{ status: 'new', at: new Date(), raw: shiprocketResult }],
+            });
+          }
+        }
+      } catch (e) {
+        console.error('[VERIFY] Shiprocket shipment creation error:', e?.message || e);
+        // Shiprocket failure is non-fatal — order and payment are still valid
+        try {
+          const { Shipment } = require('../models/shipment');
+          const existing = await Shipment.findOne({ order: payment.order }).lean();
+          if (!existing) {
+            await Shipment.create({
+              order: payment.order,
+              shiprocketOrderId: '',
+              shiprocketShipmentId: '',
+              courierId: 0,
+              awbNumber: '',
+              courierName: '',
+              status: 'failed',
+              lastError: e.message,
+              nextRetryAfter: new Date(Date.now() + 30 * 1000),
+              retryCount: 1,
+              eventHistory: [{ status: 'failed', at: new Date(), raw: { error: e.message, details: e?.raw } }],
+            });
+          }
+        } catch (e2) {
+          console.error('[VERIFY] Failed to record Shiprocket failure:', e2);
+        }
+      }
+    }
+
+    // Fetch order details for response
     let orderDetails = null;
     if (payment.order) {
       try {
         orderDetails = await Order.findById(payment.order).lean();
       } catch (e) {
-        console.log('[VERIFY] Could not fetch order details:', e.message);
+        // ignore
       }
     }
 
@@ -1710,7 +1782,7 @@ router.post('/verify', authenticateToken, async (req, res) => {
       provider: payment.provider,
       orderId: payment.order ? String(payment.order) : undefined,
       orderNumber: orderDetails?.orderNumber || '',
-      order: orderDetails, // Full order details for SummaryPage display
+      order: orderDetails,
     });
   } catch (e) {
     console.error('Verify payment error:', e);

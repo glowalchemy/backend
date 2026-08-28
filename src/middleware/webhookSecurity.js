@@ -41,7 +41,14 @@ function verifyShiprocketSignature({ rawBody, signature, secret, apiKey }) {
   // 1) Preferred: HMAC signature verification (x-shiprocket-signature)
   if (secret && signature) {
     const expectedSignature = crypto.createHmac('sha256', secret).update(rawBody, 'utf8').digest('hex');
-    const isValid = crypto.timingSafeEqual(Buffer.from(expectedSignature, 'hex'), Buffer.from(signature, 'hex'));
+    const expectedBuf = Buffer.from(expectedSignature, 'hex');
+    const gotBuf = Buffer.from(String(signature || ''), 'hex');
+    // timingSafeEqual requires equal-length buffers; differenLength ⇒ reject
+    if (expectedBuf.length !== gotBuf.length) {
+      console.error('Shiprocket signature length mismatch');
+      return { ok: false, reason: 'Signature mismatch' };
+    }
+    const isValid = crypto.timingSafeEqual(expectedBuf, gotBuf);
     if (!isValid) {
       console.error('Shiprocket signature mismatch:', { expected: expectedSignature, got: signature });
     }
@@ -52,7 +59,12 @@ function verifyShiprocketSignature({ rawBody, signature, secret, apiKey }) {
   const expectedToken = String(process.env.SHIPROCKET_WEBHOOK_TOKEN || '').trim();
   if (expectedToken) {
     if (!apiKey) return { ok: false, reason: 'Missing x-api-key header' };
-    const ok = crypto.timingSafeEqual(Buffer.from(String(expectedToken)), Buffer.from(String(apiKey)));
+    const expectedBuf = Buffer.from(String(expectedToken));
+    const gotBuf = Buffer.from(String(apiKey));
+    if (expectedBuf.length !== gotBuf.length) {
+      return { ok: false, reason: 'Invalid x-api-key token' };
+    }
+    const ok = crypto.timingSafeEqual(expectedBuf, gotBuf);
     return { ok, reason: ok ? null : 'Invalid x-api-key token' };
   }
 

@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const shipmentSchema = new mongoose.Schema({
-  order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', required: true },
+  order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', required: true, unique: true },
   shiprocketOrderId: { type: String, required: false, default: '' },
   shiprocketShipmentId: { type: String, required: false, default: '' },
   courierId: { type: Number, required: false, default: 0 },
