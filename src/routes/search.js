@@ -21,7 +21,9 @@ router.get('/suggest', async (req, res) => {
   try {
     const q = String(req.query?.q || '').trim();
     const limit = Math.min(10, Math.max(1, Number(req.query?.limit) || 6));
-    if (!q) {
+    const MIN_CHARS = 3; // Match frontend MIN_SUGGEST_CHARS
+    
+    if (!q || q.length < MIN_CHARS) {
       return res.json({ products: [], categories: [], brands: [], query: '' });
     }
 

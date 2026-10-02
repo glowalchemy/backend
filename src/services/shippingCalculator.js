@@ -70,7 +70,9 @@ function calculateOrderTotals(items, productById, options = {}) {
     const qty = Math.max(1, Number(it?.quantity ?? 1) || 1);
 
     // Get product price from database for security
-    const productPrice = Number(p?.price ?? p?.management?.pricing?.sellingPrice ?? 0) || 0;
+    // Canonical source: management.pricing.sellingPrice (per productNormalizer.js)
+    // Fallback: doc.price (legacy field)
+    const productPrice = Number(p?.management?.pricing?.sellingPrice ?? p?.price ?? 0) || 0;
     calculatedSubtotal += productPrice * qty;
 
     // Check for custom flat shipping (not multiplied by quantity)

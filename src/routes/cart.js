@@ -93,13 +93,15 @@ const Cart = mongoose.models.Cart || mongoose.model('Cart', CartSchema);
 router.get('/', authenticateUser, requireUser, async (req, res) => {
     try {
         const cart = await Cart.findOne({ user: req.user._id })
-            .populate('items.product', 'name sku image price codAvailable codCharge shippingCharge freeShipping weight dimensions management');
+            .populate('items.product', 'name sku image price category management.pricing.sellingPrice management.shipping.codAvailable management.shipping.codCharge management.shipping.freeShipping management.shipping.shippingCharge management.shipping.weightKg management.shipping.dimensionsCm');
 
         if (!cart) {
             return res.json({ items: [], totalAmount: 0 });
         }
 
         // Refresh line prices from latest product pricing so admin updates reflect in cart/checkout.
+        // Canonical source: management.pricing.sellingPrice (per productNormalizer.js)
+        // Fallback: doc.price (legacy field)
         let changed = false;
         cart.items.forEach((item) => {
             const p = item?.product;
@@ -210,7 +212,7 @@ router.post('/add', authenticateUser, requireUser, async (req, res) => {
 
         // Return updated cart with populated product details
         const updatedCart = await Cart.findOne({ user: req.userId })
-            .populate('items.product', 'name sku image price codAvailable codCharge shippingCharge freeShipping weight dimensions');
+            .populate('items.product', 'name sku image price category management.pricing.sellingPrice management.shipping.codAvailable management.shipping.codCharge management.shipping.freeShipping management.shipping.shippingCharge management.shipping.weightKg management.shipping.dimensionsCm');
 
         if (!updatedCart) {
             return res.status(500).json({ error: 'Failed to retrieve updated cart' });
@@ -274,7 +276,7 @@ router.put('/update', authenticateUser, requireUser, async (req, res) => {
 
         // Return updated cart with populated product details
         const updatedCart = await Cart.findOne({ user: req.userId })
-            .populate('items.product', 'name sku image price codAvailable codCharge shippingCharge freeShipping weight dimensions');
+            .populate('items.product', 'name sku image price category management.pricing.sellingPrice management.shipping.codAvailable management.shipping.codCharge management.shipping.freeShipping management.shipping.shippingCharge management.shipping.weightKg management.shipping.dimensionsCm');
 
         if (!updatedCart) {
             return res.status(500).json({ error: 'Failed to retrieve updated cart' });
@@ -320,7 +322,7 @@ router.delete('/remove/:productId', authenticateUser, requireUser, async (req, r
 
         // Return updated cart with populated product details
         const updatedCart = await Cart.findOne({ user: req.userId })
-            .populate('items.product', 'name sku image price codAvailable codCharge shippingCharge freeShipping weight dimensions');
+            .populate('items.product', 'name sku image price category management.pricing.sellingPrice management.shipping.codAvailable management.shipping.codCharge management.shipping.freeShipping management.shipping.shippingCharge management.shipping.weightKg management.shipping.dimensionsCm');
 
         if (!updatedCart) {
             return res.status(500).json({ error: 'Failed to retrieve updated cart' });
@@ -379,7 +381,7 @@ router.delete('/remove', authenticateUser, requireUser, async (req, res) => {
 
         // Return updated cart with populated product details
         const updatedCart = await Cart.findOne({ user: req.userId })
-            .populate('items.product', 'name sku image price codAvailable codCharge shippingCharge freeShipping weight dimensions');
+            .populate('items.product', 'name sku image price category management.pricing.sellingPrice management.shipping.codAvailable management.shipping.codCharge management.shipping.freeShipping management.shipping.shippingCharge management.shipping.weightKg management.shipping.dimensionsCm');
 
         if (!updatedCart) {
             return res.status(500).json({ error: 'Failed to retrieve updated cart' });
@@ -451,7 +453,7 @@ router.delete('/remove-by-object', authenticateUser, requireUser, async (req, re
 
         // Return updated cart with populated product details
         const updatedCart = await Cart.findOne({ user: req.userId })
-            .populate('items.product', 'name sku image price codAvailable codCharge shippingCharge freeShipping weight dimensions');
+            .populate('items.product', 'name sku image price category management.pricing.sellingPrice management.shipping.codAvailable management.shipping.codCharge management.shipping.freeShipping management.shipping.shippingCharge management.shipping.weightKg management.shipping.dimensionsCm');
 
         if (!updatedCart) {
             return res.status(500).json({ error: 'Failed to retrieve updated cart' });
@@ -534,7 +536,7 @@ router.put('/update-by-object', authenticateUser, requireUser, async (req, res) 
 
         // Return updated cart with populated product details
         const updatedCart = await Cart.findOne({ user: req.userId })
-            .populate('items.product', 'name sku image price codAvailable codCharge shippingCharge freeShipping weight dimensions');
+            .populate('items.product', 'name sku image price category management.pricing.sellingPrice management.shipping.codAvailable management.shipping.codCharge management.shipping.freeShipping management.shipping.shippingCharge management.shipping.weightKg management.shipping.dimensionsCm');
 
         if (!updatedCart) {
             return res.status(500).json({ error: 'Failed to retrieve updated cart' });

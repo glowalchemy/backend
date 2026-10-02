@@ -94,7 +94,8 @@ router.get('/:productId/details', async (req, res) => {
 
     }
 
-    const product = await ProductModel.findById(productId);
+    const product = await ProductModel.findById(productId)
+      .select('slug visibility status sku name description galleryImages brand management managementUpdatedAt price originalPrice stock image rating reviews questions keyFeatures warranty warrantyDetails weight dimensions sizes colors colorVariants tags saleEnabled saleDiscount saleStartDate saleEndDate freeShipping shippingCharge codAvailable codCharge metaTitle metaDescription createdAt updatedAt');
     if (!product) {
       return res.status(404).json({ message: 'Product not found' });
     }
@@ -183,10 +184,27 @@ router.get('/:productId/details', async (req, res) => {
         : (product.brand || ''),
       codAvailable: typeof product.codAvailable === 'boolean' ? product.codAvailable : Boolean(product.management && product.management.shipping && product.management.shipping.codAvailable),
       codCharge: Number(product?.codCharge ?? (product.management && product.management.shipping ? product.management.shipping.codCharge : 0) ?? 0) || 0,
-      // Full management doc (product's own data, already returned publicly by the
-      // catalog API) so the PDP can render real specs, returns and shipping
-      // without a second product request.
-      management: product.management,
+      // Only return specific management sub-fields actually used by PDP
+      // Field usage verified against ProductDetailModern.jsx
+      management: {
+        pricing: {
+          sellingPrice: product.management?.pricing?.sellingPrice,
+          originalPrice: product.management?.pricing?.originalPrice,
+          mrp: product.management?.pricing?.mrp,
+        },
+        shipping: {
+          freeShipping: product.management?.shipping?.freeShipping,
+          codAvailable: product.management?.shipping?.codAvailable,
+          codCharge: product.management?.shipping?.codCharge,
+          shippingCharge: product.management?.shipping?.shippingCharge,
+          weightKg: product.management?.shipping?.weightKg,
+          dimensionsCm: product.management?.shipping?.dimensionsCm,
+        },
+        details: {
+          technicalSpecs: product.management?.details?.technicalSpecs,
+          returnPolicy: product.management?.details?.returnPolicy,
+        },
+      },
       category: product.category,
       stock,
       rating: product.rating || 0,

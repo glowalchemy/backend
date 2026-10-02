@@ -14,10 +14,11 @@ router.get('/', async (req, res) => {
         const { position, grouped } = req.query;
 
         if (position) {
+            // Only return fields actually used by frontend: image, link, _id
             const activeBanners = await Banner.find({
                 position: position,
                 active: true
-            }).sort({ order: 1, createdAt: -1 });
+            }).select('image link _id').sort({ order: 1, createdAt: -1 });
 
             if (!activeBanners || activeBanners.length === 0) {
                 return res.json({

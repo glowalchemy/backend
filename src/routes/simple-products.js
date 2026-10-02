@@ -120,6 +120,7 @@ router.get('/', async (req, res) => {
             minPrice: parseIntQuery(req.query?.minPrice),
             maxPrice: parseIntQuery(req.query?.maxPrice),
             inStock: String(req.query?.inStock ?? '').toLowerCase() === 'true' ? true : undefined,
+            outOfStock: String(req.query?.outOfStock ?? '').toLowerCase() === 'true' ? true : undefined,
             freeShipping: String(req.query?.freeShipping ?? '').toLowerCase() === 'true' ? true : undefined,
             onSale: String(req.query?.onSale ?? '').toLowerCase() === 'true' ? true : undefined,
             featured: String(req.query?.featured ?? '').toLowerCase() === 'true' ? true : undefined,
@@ -131,7 +132,8 @@ router.get('/', async (req, res) => {
             order,
             page,
             limit,
-            wantFacets,
+            wantFacets: String(req.query?.facets ?? '').toLowerCase() === 'true' ? true : false,
+            fields: String(req.query?.fields || '').trim() || undefined,
         };
 
         const data = mode === 'public' ? await listPublic(req, params) : await catalogService.queryCatalog(params);
@@ -537,6 +539,19 @@ router.delete('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
     } catch (error) {
         console.error('Error deleting product:', error);
         res.status(500).json({ success: false, message: 'Failed to delete product' });
+    }
+});
+
+// GET /api/products/popular - Sales-based popular products
+// MUST be defined before /:id to avoid route conflict
+router.get('/popular', async (req, res) => {
+    try {
+        const limit = Math.min(100, Math.max(1, Number(req.query?.limit || 60) || 60));
+        const products = await catalogService.getPopularProducts(req, { limit });
+        res.json(products);
+    } catch (error) {
+        console.error('Error fetching popular products:', error);
+        res.status(500).json({ success: false, message: 'Failed to fetch popular products' });
     }
 });
 

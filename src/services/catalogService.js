@@ -64,6 +64,30 @@ function publicBaseFilter(mode) {
 }
 
 // ---------------------------------------------------------------------------
+// Field projection for basic listings (home page, sliders, etc.)
+// Only essential fields to reduce payload size
+// ---------------------------------------------------------------------------
+
+const BASIC_PROJECTION = {
+  _id: 1, slug: 1, name: 1, price: 1, originalPrice: 1, stock: 1, status: 1,
+  image: 1, galleryImages: 1, category: 1, featured: 1, rating: 1,
+  sizes: 1, colors: 1, tags: 1, saleEnabled: 1, saleDiscount: 1,
+  'management.basic': 1, 'management.pricing': 1, 'management.inventory': 1, 'management.media': 1,
+  'management.marketing.featured': 1, 'management.marketing.badge': 1,
+  'management.shipping.freeShipping': 1,
+  'management.salePage.enabled': 1, 'management.salePage.bannerText': 1,
+};
+
+// ---------------------------------------------------------------------------
+// Field projection for search suggestions (autocomplete)
+// Minimal fields needed for search dropdown display
+// ---------------------------------------------------------------------------
+
+const SEARCH_SUGGEST_PROJECTION = {
+  _id: 1, slug: 1, name: 1, price: 1, originalPrice: 1, image: 1, category: 1, rating: 1,
+};
+
+// ---------------------------------------------------------------------------
 // Media resolution + product mapping (moved from simple-products.js,
 // output shape preserved; `management` blob no longer returned in listings).
 // ---------------------------------------------------------------------------
@@ -311,6 +335,8 @@ function stripFacetFilter(filter, facetName) {
     delete next.price;
   } else if (facetName === 'rating') {
     delete next.rating;
+  } else if (facetName === 'stock') {
+    delete next.stock;
   }
   return next;
 }
@@ -368,6 +394,32 @@ async function computeFacets(baseFilter) {
             },
           },
         ],
+        availability: [
+          { $match: stripFacetFilter(baseFilter, 'stock') },
+          {
+            $group: {
+              _id: null,
+              inStock: {
+                $sum: {
+                  $cond: {
+                    if: { $gt: ['$stock', 0] },
+                    then: 1,
+                    else: 0,
+                  },
+                },
+              },
+              outOfStock: {
+                $sum: {
+                  $cond: {
+                    if: { $lte: ['$stock', 0] },
+                    then: 1,
+                    else: 0,
+                  },
+                },
+              },
+            },
+          },
+        ],
         subcategories: [
           { $match: stripFacetFilter(baseFilter, 'subcategories') },
           { $project: { s: { $ifNull: ['$management.basic.subCategoryId', '$subCategoryId'] } } },
@@ -381,6 +433,12 @@ async function computeFacets(baseFilter) {
   ];
   const [result] = await db.collection('products').aggregate(pipeline).toArray();
   const toValues = (rows) => (rows || []).map((r) => ({ value: String(r._id), count: r.count }));
+
+  const availabilityResult = (result && result.availability && result.availability[0]) || {};
+  const availabilityCounts = {
+    inStock: Number(availabilityResult.inStock || 0),
+    outOfStock: Number(availabilityResult.outOfStock || 0),
+  };
 
   return {
     brands: toValues(result && result.brands),
@@ -398,6 +456,7 @@ async function computeFacets(baseFilter) {
       min: r._id === 'unrated' ? null : Number(r._id),
       count: r.count,
     })),
+    availability: availabilityCounts,
     subcategories: toValues(result && result.subcategories),
   };
 }
@@ -461,7 +520,7 @@ async function computeCategoryCounts(mode) {
 // ---------------------------------------------------------------------------
 
 function buildQueryFilter(params) {
-  const { mode, category, subCategoryId, q, minPrice, maxPrice, inStock, freeShipping, onSale, sizes, colors, brands, rating, featured } = params;
+  const { mode, category, subCategoryId, q, minPrice, maxPrice, inStock, outOfStock, freeShipping, onSale, sizes, colors, brands, rating, featured } = params;
   const filter = publicBaseFilter(mode);
 
   if (category) {
@@ -488,6 +547,7 @@ function buildQueryFilter(params) {
   }
 
   if (inStock) filter.stock = { $gt: 0 };
+  if (outOfStock) filter.stock = { $lte: 0 };
   if (freeShipping) filter.freeShipping = true;
   if (onSale) { filter.saleEnabled = true; filter.saleDiscount = { $gt: 0 }; }
   if (featured) filter.featured = true;
@@ -505,7 +565,7 @@ function buildQueryFilter(params) {
  * queryCatalog — the single catalog/search entry point.
  * Returns { items, pagination, facets?, search? } (array-form preserved via opts.arrayMode).
  */
-async function queryCatalog({ req, mode = 'public', category, subCategoryId, q, minPrice, maxPrice, inStock, freeShipping, onSale, sizes, colors, brands, rating, featured, sort, order, page, limit, wantFacets = false }) {
+async function queryCatalog({ req, mode = 'public', category, subCategoryId, q, minPrice, maxPrice, inStock, outOfStock, freeShipping, onSale, sizes, colors, brands, rating, featured, sort, order, page, limit, wantFacets = false, fields }) {
   const started = Date.now();
   let total = 0;
   let searchInfo = null;
@@ -513,7 +573,7 @@ async function queryCatalog({ req, mode = 'public', category, subCategoryId, q, 
 
   const params = {
     mode, category: resolvedCategoryId || category, subCategoryId,
-    q, minPrice, maxPrice, inStock, freeShipping, onSale, sizes, colors, brands, rating, featured,
+    q, minPrice, maxPrice, inStock, outOfStock, freeShipping, onSale, sizes, colors, brands, rating, featured,
   };
   const filter = buildQueryFilter(params);
   const sortSpec = resolveSort(sort);
@@ -526,12 +586,15 @@ async function queryCatalog({ req, mode = 'public', category, subCategoryId, q, 
   const db = mongoose.connection.db;
   const products = db.collection('products');
 
+  // Use basic projection for home page sliders to reduce payload
+  const projection = fields === 'basic' ? BASIC_PROJECTION : LISTING_PROJECTION;
+
   // Search path: build the search filter and rank by relevance.
   if (q) {
     const { filter: searchFilter, tokens, full, substringUsed } = buildSearchFilter(q, filter, { minChars: minCharsSetting() });
     const ranked = await products
       .find(searchFilter)
-      .project(LISTING_PROJECTION)
+      .project(projection)
       .sort({ createdAt: -1 })
       .limit(candidateCap())
       .toArray();
@@ -549,7 +612,7 @@ async function queryCatalog({ req, mode = 'public', category, subCategoryId, q, 
   }
 
   // Standard listing path.
-  const cursor = products.find(filter).project(LISTING_PROJECTION);
+  const cursor = products.find(filter).project(projection);
   if (sortSpec) cursor.sort(sortSpec);
   const run = async () => {
     if (shouldPaginate) {
@@ -596,7 +659,7 @@ async function listPublic(req, params) {
   const host = req && req.get ? req.get('host') : 'local';
   const key = `catalog|${host}|${JSON.stringify({
     mode: params.mode, category: params.category, subCategoryId: params.subCategoryId,
-    q: params.q, minPrice: params.minPrice, maxPrice: params.maxPrice, inStock: params.inStock,
+    q: params.q, minPrice: params.minPrice, maxPrice: params.maxPrice, inStock: params.inStock, outOfStock: params.outOfStock,
     freeShipping: params.freeShipping, onSale: params.onSale, sizes: params.sizes, colors: params.colors,
     brands: params.brands, rating: params.rating, featured: params.featured, sort: params.sort,
     page: params.page, limit: params.limit, facets: params.wantFacets,
@@ -655,6 +718,85 @@ async function suggestForQuery(q, { limit = 3 } = {}) {
   return out;
 }
 
+async function fetchPopularProducts(req, { limit = 60 } = {}) {
+  const db = mongoose.connection.db;
+  const paidStatuses = ['paid', 'shipped', 'delivered'];
+  const safeLimit = Math.min(100, Math.max(1, Number(limit) || 60));
+
+  const pipeline = [
+    {
+      $match: { 
+        status: { $in: paidStatuses },
+        'items.productId': { $ne: null, $ne: '' }
+      }
+    },
+    { $unwind: '$items' },
+    {
+      $group: {
+        _id: '$items.productId',
+        totalSold: { $sum: '$items.quantity' }
+      }
+    },
+    { $sort: { totalSold: -1 } },
+    { $limit: safeLimit }
+  ];
+  
+  const results = await db.collection('orders').aggregate(pipeline).toArray();
+  const productIds = results.map(r => r._id);
+  
+  if (productIds.length === 0) return [];
+  
+  // Handle both string IDs and ObjectIds for flexible matching
+  const objectIds = productIds
+    .filter(id => mongoose.Types.ObjectId.isValid(String(id)))
+    .map(id => new mongoose.Types.ObjectId(String(id)));
+  const stringIds = productIds
+    .filter(id => !mongoose.Types.ObjectId.isValid(String(id)))
+    .map(id => String(id));
+  
+  const idConditions = [];
+  if (objectIds.length > 0) {
+    idConditions.push({ _id: { $in: objectIds } });
+  }
+  if (stringIds.length > 0) {
+    idConditions.push({ _id: { $in: stringIds } });
+  }
+  
+  const productFilter = idConditions.length > 0 
+    ? { $or: idConditions, status: { $in: ['active', 'published'] } }
+    : { status: { $in: ['active', 'published'] } };
+  
+  const products = await db.collection('products')
+    .find(productFilter)
+    .project(LISTING_PROJECTION)
+    .toArray();
+  
+  // Create a map of productId -> totalSold for sorting
+  const salesMap = new Map(results.map(r => [String(r._id), r.totalSold]));
+  
+  // Sort products by sales count, with createdAt as tiebreaker
+  const sortedProducts = products.sort((a, b) => {
+    const salesA = salesMap.get(String(a._id)) || 0;
+    const salesB = salesMap.get(String(b._id)) || 0;
+    if (salesB !== salesA) {
+      return salesB - salesA;
+    }
+    // Tiebreaker: newer products first
+    const dateA = new Date(a.createdAt || 0).getTime();
+    const dateB = new Date(b.createdAt || 0).getTime();
+    return dateB - dateA;
+  });
+  
+  return await mapProducts(req, sortedProducts);
+}
+
+async function getPopularProducts(req, { limit = 60 } = {}) {
+  const host = req && req.get ? req.get('host') : 'local';
+  const key = `popular|${host}|${limit}`;
+  const result = await cacheService.getOrSet(key, () => fetchPopularProducts(req, { limit }), 900); // 15 min cache
+  return result.value;
+}
+
 module.exports = {
   queryCatalog,
   listPublic,
@@ -667,7 +809,10 @@ module.exports = {
   publicBaseFilter,
   resolveCategoryId,
   suggestForQuery,
+  getPopularProducts,
   LISTING_PROJECTION,
+  BASIC_PROJECTION,
+  SEARCH_SUGGEST_PROJECTION,
   SORT_WHITELIST,
   parseIntQuery,
   parseCsvQuery,

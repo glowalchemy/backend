@@ -28,7 +28,7 @@ async function getSuggestions({ q, req, limit }) {
   const { filter, tokens, full } = buildSearchFilter(q, baseFilter, { minChars: 1 });
   const docs = await mongoose.connection.db.collection('products')
     .find(filter)
-    .project(catalogService.LISTING_PROJECTION)
+    .project(catalogService.SEARCH_SUGGEST_PROJECTION)
     .sort({ createdAt: -1 })
     .limit(candidateCap())
     .toArray();
