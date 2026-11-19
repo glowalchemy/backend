@@ -25,7 +25,7 @@ function getAbsoluteUrl(req, path) {
     const resolved = resolveAssetUrl(req, path);
     if (!resolved) return '';
     if (resolved.startsWith('http://') || resolved.startsWith('https://')) return resolved;
-    const host = req.get('host') || 'trozzi.in';
+    const host = req.get('host') || 'glowalchemy.in';
     const protocol = req.protocol || 'https';
     if (resolved.startsWith('/')) {
         return `${protocol}://${host}${resolved}`;
@@ -82,7 +82,7 @@ function generateProductCSV(products, req) {
         
         // Product URL
         const slug = p.slug || id;
-        const host = req.get('host') || 'trozzi.in';
+        const host = req.get('host') || 'glowalchemy.in';
         const protocol = req.protocol || 'https';
         const link = `${protocol}://${host}/product/${slug}`;
         
@@ -94,7 +94,7 @@ function generateProductCSV(products, req) {
         const imageLink = getAbsoluteUrl(req, imageUrl);
         
         // Brand
-        const brand = basic.brand || 'Trozzi';
+        const brand = basic.brand || 'GlowAlchemy';
         
         // SKU
         const sku = inventory.sku || p.sku || id;
@@ -189,7 +189,7 @@ router.get('/products.csv', async (req, res) => {
 
         // Set headers for CSV download
         res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-        res.setHeader('Content-Disposition', 'attachment; filename="trozzi-products.csv"');
+        res.setHeader('Content-Disposition', 'attachment; filename="glowalchemy-products.csv"');
         res.setHeader('Cache-Control', 'no-cache');
 
         res.send(csv);
@@ -232,7 +232,7 @@ router.get('/products.json', async (req, res) => {
             })
             .toArray();
 
-        const host = req.get('host') || 'trozzi.in';
+        const host = req.get('host') || 'glowalchemy.in';
         const protocol = req.protocol || 'https';
 
         const feed = products.map(p => {
@@ -258,7 +258,7 @@ router.get('/products.json', async (req, res) => {
                 sale_price: pricing.compareAtPrice ? `${pricing.sellingPrice || p.price || 0} INR` : undefined,
                 link: `${protocol}://${host}/product/${p.slug || p._id}`,
                 image_link: imageUrl.startsWith('http') ? imageUrl : `${protocol}://${host}${imageUrl}`,
-                brand: basic.brand || 'Trozzi',
+                brand: basic.brand || 'GlowAlchemy',
                 sku: inventory.sku || p.sku || String(p._id),
                 item_group_id: String(p._id),
                 google_product_category: 'Apparel & Accessories > Clothing',
@@ -298,7 +298,7 @@ function buildProductData(p, req) {
     const shipping = management.shipping || {};
     const attributes = management.attributes || {};
 
-    const host = req.get('host') || 'trozzi.in';
+    const host = req.get('host') || 'glowalchemy.in';
     const protocol = req.protocol || 'https';
 
     const rawImages = Array.isArray(media.images) ? media.images : [];
@@ -329,7 +329,7 @@ function buildProductData(p, req) {
         link: `${protocol}://${host}/product/${p.slug || p._id}`,
         imageLink: imageLink,
         additionalImages: rawImages.slice(1).map(img => img.url ? (img.url.startsWith('http') ? img.url : `${protocol}://${host}${img.url}`) : '').filter(Boolean),
-        brand: basic.brand || 'Trozzi',
+        brand: basic.brand || 'GlowAlchemy',
         sku: inventory.sku || p.sku || String(p._id),
         itemGroupId: String(p._id),
         category: Array.isArray(basic.categoryIds) && basic.categoryIds[0] ? basic.categoryIds[0] : 'Apparel & Accessories',

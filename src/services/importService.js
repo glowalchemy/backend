@@ -71,14 +71,15 @@ function normalizeRow(row, options = {}) {
   const length = toNum(row.length_cm ?? row.length, 0);
   const width = toNum(row.width_cm ?? row.width, 0);
   const height = toNum(row.height_cm ?? row.height, 0);
-  const freeShipping = toStr(row.free_shipping).toLowerCase() === 'true' || row.freeShipping === true;
-  const codAvailable = toStr(row.cod).toLowerCase() === 'true' || row.codAvailable === true;
+  const freeShipping = toStr(row.free_shipping).toLowerCase() === 'true' || row.freeShipping === true || row.free_shipping === true;
+  const codAvailable = toStr(row.cod).toLowerCase() === 'true' || row.codAvailable === true || row.cod === true;
   const codCharge = toNum(row.cod_charge, 0);
   const shippingCharge = toNum(row.shipping_charge, 0);
   const status = toStr(row.status).toLowerCase() === 'draft' ? 'draft' : 'active';
-  const sizes = Array.isArray(row.sizes) ? row.sizes.map((s) => toStr(s)).filter(Boolean) : [];
-  const colors = Array.isArray(row.colors) ? row.colors.map((c) => toStr(c)).filter(Boolean) : [];
-  const saleEnabled = toStr(row.sale).toLowerCase() === 'true' || row.saleEnabled === true;
+  const splitList = (v) => Array.isArray(v) ? v.map((s) => toStr(s)).filter(Boolean) : (toStr(v) ? toStr(v).split(/[|;]/).map((s) => s.trim()).filter(Boolean) : []);
+  const sizes = splitList(row.sizes);
+  const colors = splitList(row.colors);
+  const saleEnabled = toStr(row.sale).toLowerCase() === 'true' || row.saleEnabled === true || row.sale === true;
   const saleDiscount = toNum(row.discount_percent, 0);
   const sourceId = toStr(row.source_id) || toStr(row.supplier_product_id) || '';
 
@@ -101,7 +102,7 @@ function normalizeRow(row, options = {}) {
     name,
     shortDescription: description,
     descriptionHtml: toStr(row.description_html) || '',
-    brand: brand || 'Trozzi',
+    brand: brand || 'GlowAlchemy',
     visibility: 'public',
     status,
     categoryIds,
@@ -116,7 +117,7 @@ function normalizeRow(row, options = {}) {
     attributes: { sets: attributeSets },
     seo: { metaTitle: toStr(row.meta_title) || name, metaDescription: toStr(row.meta_description) || description.slice(0, 160) },
     shipping: { weightKg: weight, dimensionsCm: { length, width, height }, freeShipping, codAvailable, codCharge, shippingCharge },
-    marketing: { featured: toStr(row.featured).toLowerCase() === 'true' },
+    marketing: { featured: toStr(row.featured).toLowerCase() === 'true' || row.featured === true },
     salePage: { enabled: false },
   };
 

@@ -4,6 +4,7 @@
  * Usage:
  *   node scripts/import-products.js ./products.csv [--dry-run] [--update] [--offset N] [--batch 50]
  *   node scripts/import-products.js ./products.json [--dry-run] [--update]
+ *   node scripts/import-products.js ./products.xlsx [--dry-run] [--update]
  *
  * CSV columns (aliases accepted): sku, title/name, selling_price/price/mrp,
  *   qty/stock, brand, category, subcategory, description, image/image_url,
@@ -12,6 +13,7 @@
  *   source_id, attributes_json, ...
  *
  * JSON: array of row objects (same field names as CSV).
+ * XLSX: first sheet, first row = headers (same field names as CSV).
  *
  * Safety: --dry-run default-safe; never deletes; idempotent by SKU.
  */
@@ -20,6 +22,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const fs = require('fs');
 const path = require('path');
 const mongoose = require('mongoose');
+const XLSX = require('xlsx');
 const { importProducts } = require('../src/services/importService');
 
 const args = process.argv.slice(2);
@@ -62,8 +65,14 @@ async function main() {
     if (!Array.isArray(rows)) rows = [rows];
   } else if (ext === '.csv') {
     rows = parseCsv(fs.readFileSync(filePath, 'utf8'));
+  } else if (ext === '.xlsx' || ext === '.xls') {
+    const wb = XLSX.read(fs.readFileSync(filePath), { type: 'buffer' });
+    const ws = wb.Sheets[wb.SheetNames[0]];
+    rows = XLSX.utils.sheet_to_json(ws, { defval: '' }).map((r) =>
+      Object.fromEntries(Object.entries(r).map(([k, v]) => [String(k).trim(), v]))
+    );
   } else {
-    console.error('Unsupported file type (use .csv or .json)');
+    console.error('Unsupported file type (use .csv, .xlsx or .json)');
     process.exit(1);
   }
 

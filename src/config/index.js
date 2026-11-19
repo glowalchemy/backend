@@ -36,7 +36,7 @@ const port = (() => {
 const brandName = String(env.BRAND_NAME || 'GlowAlchemy').trim();
 
 // CORS allowlist. Provide a comma-separated list via CORS_ORIGINS for
-// staging/production (e.g. https://trozzi.in,https://admin.trozzi.in).
+// staging/production (e.g. https://glowalchemy.in,https://admin.glowalchemy.in).
 // In production, requests from any origin other than the allowlist are rejected.
 const corsOrigins = (() => {
   const raw = String(env.CORS_ORIGINS || '').trim();
@@ -58,6 +58,9 @@ const corsOrigins = (() => {
     'http://127.0.0.1:8080',
     'http://127.0.0.1:8081',
     'http://127.0.0.1:5000',
+    // Allow devtunnels URLs for development
+    'https://56n4nblq-8080.inc1.devtunnels.ms',
+    'https://56n4nblq-3000.inc1.devtunnels.ms',
     // Allow common network IP ranges for development
     /^http:\/\/192\.168\.\d+\.\d+:\d+$/,
     /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,
@@ -70,7 +73,12 @@ const corsOrigins = (() => {
 function corsOriginCallback(origin, callback) {
   if (!origin) return callback(null, true);
   
-  // Check for exact match
+  // In development, allow all origins for mobile/tunnel access
+  if (!isProduction) {
+    return callback(null, true);
+  }
+  
+  // Check for exact match in production
   if (corsOrigins.includes(origin)) return callback(null, true);
   
   // Check for regex patterns (for network IP ranges)

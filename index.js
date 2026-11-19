@@ -10,7 +10,7 @@ const jwt = require('jsonwebtoken');
 const dns = require('node:dns');
 const config = require('./src/config');
 
-// Import routes
+// Import routes    
 const reviewsRouter = require('./src/routes/simple-reviews');
 const productsRouter = require('./src/routes/simple-products');
 const categoriesRouter = require('./src/routes/simple-categories');
@@ -79,7 +79,7 @@ if (config.isProduction) {
     console.warn(
       '\n⚠️  WARNING: CORS_ORIGINS not set in production.\n' +
       '   Set CORS_ORIGINS to your frontend domains to secure your API.\n' +
-      '   Example: CORS_ORIGINS=https://trozzi.in,https://admin.trozzi.in\n',
+      '   Example: CORS_ORIGINS=https://glowalchemy.in,https://admin.glowalchemy.in\n',
     );
   }
   
