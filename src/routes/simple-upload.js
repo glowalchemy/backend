@@ -4,6 +4,7 @@ const multer = require('multer');
 const { authenticateAdmin, requireAdmin } = require('../middleware/adminAuth');
 const {
     uploadObject,
+    deleteObjects,
     getSignedDownloadUrl,
     getObjectStream,
     isSafeKey,
@@ -161,6 +162,55 @@ router.post('/admin-image', authenticateAdmin, requireAdmin, upload.single('imag
 
 // POST /api/upload/image - Public image upload (e.g. review images)
 router.post('/image', upload.single('image'), handleImageUpload);
+
+// DELETE /api/upload/:id - Permanently delete an upload and its B2 objects.
+// Removes the original, the primary display object and every generated
+// variant. Object deletion is best-effort: the database record is removed
+// even if a storage call fails, and the failure is reported in the response.
+router.delete('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
+    try {
+        const id = String(req.params.id || '').trim();
+        if (!id || !/^[a-fA-F0-9]{24}$/.test(id)) {
+            return res.status(400).json({ success: false, message: 'Invalid upload id' });
+        }
+
+        const doc = await UploadModel.findById(id).lean();
+        if (!doc) {
+            return res.status(404).json({ success: false, message: 'Upload not found' });
+        }
+
+        const keys = new Set();
+        for (const k of [doc.key, doc.originalKey, doc.primaryKey]) {
+            if (k && isSafeKey(k)) keys.add(k);
+        }
+        for (const v of Array.isArray(doc.variants) ? doc.variants : []) {
+            const k = String(v && v.key || '');
+            if (k && isSafeKey(k)) keys.add(k);
+        }
+
+        let storageWarning = '';
+        try {
+            await deleteObjects([...keys]);
+        } catch (error) {
+            console.error('Upload object cleanup failed:', {
+                id,
+                failed: error && error.failedObjects ? error.failedObjects.length : 1,
+            });
+            storageWarning = 'Record deleted but some storage objects could not be removed';
+        }
+
+        await UploadModel.findByIdAndDelete(id);
+
+        res.json({
+            success: true,
+            message: storageWarning || 'Upload deleted successfully',
+            ...(storageWarning ? { warning: storageWarning } : {}),
+        });
+    } catch (error) {
+        console.error('Delete upload error:', error);
+        res.status(500).json({ success: false, message: 'Failed to delete upload' });
+    }
+});
 
 // GET /api/upload/file/* - Serve private objects.
 //   Immutable optimized variants (uploads/<folder>/<id>/<slot>.avif|webp) are

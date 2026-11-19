@@ -1,7 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const { ProductModel } = require('../models/product');
-const { resolveAssetUrl } = require('../config/storage');
+const { resolveAssetUrl, isImageUrl } = require('../config/storage');
 const { resolveMediaForValues } = require('../services/imageMedia');
 
 const router = express.Router();
@@ -49,7 +49,10 @@ function mapQuestion(q) {
   };
 }
 
-function mapReview(r) {
+function mapReview(r, req) {
+  const images = Array.isArray(r.images)
+    ? r.images.map((img) => toAbsoluteUrl(req, img)).filter(Boolean).slice(0, 5)
+    : [];
   return {
     id: r._id || r.id,
     rating: r.rating,
@@ -60,6 +63,7 @@ function mapReview(r) {
     verifiedPurchase: !!r.verifiedPurchase,
     helpful: r.helpful || 0,
     status: r.status || 'pending',
+    images,
   };
 }
 
@@ -412,7 +416,7 @@ router.get('/:productId/reviews', async (req, res) => {
     })();
 
     return res.json({
-      reviews: pageItems.map(mapReview),
+      reviews: pageItems.map((r) => mapReview(r, req)),
       page,
       limit,
       total,
@@ -441,6 +445,15 @@ router.post('/:productId/reviews', async (req, res) => {
     const customerEmail = safeEmail(req.body?.customerEmail);
     const verifiedPurchase = !!req.body?.verifiedPurchase;
 
+    const imagesRaw = Array.isArray(req.body?.images) ? req.body.images : [];
+    const images = imagesRaw
+      .map((u) => safeString(u, 2048))
+      .filter((u) => u.length > 0)
+      .slice(0, 5);
+    if (images.some((u) => !isImageUrl(u))) {
+      return res.status(400).json({ message: 'Review images must be image URLs only' });
+    }
+
     if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
       return res.status(400).json({ message: 'Invalid rating' });
     }
@@ -456,6 +469,7 @@ router.post('/:productId/reviews', async (req, res) => {
       comment,
       customerName,
       customerEmail,
+      images,
       date: new Date().toISOString(),
       verifiedPurchase,
       helpful: 0,
@@ -495,7 +509,7 @@ router.post('/:productId/reviews', async (req, res) => {
 
     return res.status(201).json({
       id: newReview._id,
-      ...mapReview(newReview),
+      ...mapReview(newReview, req),
     });
   } catch (error) {
     console.error('Error submitting review:', error);

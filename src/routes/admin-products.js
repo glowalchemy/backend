@@ -26,7 +26,14 @@ function mapProduct(p, req) {
         updatedAt: p.updatedAt,
         sizes: p.sizes,
         colors: p.colors,
-        colorVariants: p.colorVariants,
+        colorVariants: Array.isArray(p.colorVariants)
+            ? p.colorVariants.map((v) => ({
+                ...v,
+                images: Array.isArray(v?.images)
+                    ? v.images.map((i) => resolveAssetUrl(req, i)).filter(Boolean)
+                    : v?.images,
+            }))
+            : p.colorVariants,
         variants: p.variants,
         tags: p.tags,
         keyFeatures: p.keyFeatures,

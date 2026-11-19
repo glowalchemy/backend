@@ -6,6 +6,7 @@ const axios = require('axios');
 const { UserModel } = require('../models/user');
 const auth = require('../middleware/auth');
 const { getOrCreateContentSettings } = require('../models/contentSettings');
+const { resolveAssetUrl, isImageUrl } = require('../config/storage');
 const config = require('../config');
 const { sendMail } = require('../services/mailer');
 
@@ -117,16 +118,17 @@ function otpHash(otp) {
     return crypto.createHash('sha256').update(String(otp)).digest('hex');
 }
 
-function pickUserForClient(userDoc, settings) {
+function pickUserForClient(userDoc, settings, req) {
     const u = userDoc && typeof userDoc.toObject === 'function' ? userDoc.toObject() : userDoc;
     if (!u) return u;
 
     const avatarUrl = String(u.avatarUrl || '').trim();
     const defaultAvatarUrl = settings ? String(settings.defaultAvatarUrl || '').trim() : '';
+    const resolve = (v) => (req ? resolveAssetUrl(req, v) : v);
 
     return {
         ...u,
-        avatarUrl: avatarUrl || defaultAvatarUrl,
+        avatarUrl: resolve(avatarUrl || defaultAvatarUrl),
         bio: String(u.bio || ''),
     };
 }
@@ -200,7 +202,7 @@ router.post('/login', [
         user.password = undefined;
 
         const settings = await getOrCreateContentSettings();
-        const userPayload = pickUserForClient(user, settings);
+        const userPayload = pickUserForClient(user, settings, req);
 
         res.json({
             success: true,
@@ -650,7 +652,7 @@ router.post('/register', [
         user.password = undefined;
 
         const settings = await getOrCreateContentSettings();
-        const userPayload = pickUserForClient(user, settings);
+        const userPayload = pickUserForClient(user, settings, req);
 
         res.status(201).json({
             success: true,
@@ -820,7 +822,7 @@ router.get('/me', auth, async (req, res) => {
         const settings = await getOrCreateContentSettings();
         res.json({
             success: true,
-            data: pickUserForClient(req.user, settings),
+            data: pickUserForClient(req.user, settings, req),
         });
     } catch (error) {
         console.error('Auth me error:', error);
@@ -873,6 +875,12 @@ router.put('/me', auth, async (req, res) => {
 
         if (next.avatarUrl !== undefined) {
             next.avatarUrl = String(next.avatarUrl ?? '').trim().slice(0, 2048);
+            if (next.avatarUrl && !isImageUrl(next.avatarUrl)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Avatar must be an image URL (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico)',
+                });
+            }
         }
 
         if (next.address && typeof next.address === 'object') {
@@ -893,7 +901,7 @@ router.put('/me', auth, async (req, res) => {
             { new: true, runValidators: true, projection: { password: 0 } }
         );
 
-        res.json({ success: true, data: pickUserForClient(updated, settings) });
+        res.json({ success: true, data: pickUserForClient(updated, settings, req) });
     } catch (error) {
         console.error('Update profile error:', error);
         res.status(500).json({ success: false, message: 'Failed to update profile' });

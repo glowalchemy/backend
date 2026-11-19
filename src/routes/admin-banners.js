@@ -12,6 +12,16 @@ const {
     absoluteUrl,
     isImageUrl,
 } = require('../config/storage');
+const { deleteAssetIfUnreferenced } = require('../services/imageMedia');
+
+/**
+ * Best-effort cleanup of the B2 object(s) backing a banner image.
+ * Skips the delete when the object is still referenced by a Media Library
+ * `uploads` document (shared asset) or when the value is an external URL.
+ */
+async function cleanupBannerImage(imageValue) {
+    await deleteAssetIfUnreferenced(imageValue);
+}
 
 router.use(authenticateAdmin, requireAdmin);
 
@@ -258,6 +268,7 @@ router.put('/:id', upload.single('image'), async (req, res) => {
         if (active !== undefined) banner.active = active === 'true';
         if (order !== undefined) banner.order = parseInt(order);
 
+        const previousImage = banner.image;
         if (req.file) {
             const s3Obj = await uploadBannerToStorage(req, req.file);
             banner.image = s3Obj.url;
@@ -274,6 +285,9 @@ router.put('/:id', upload.single('image'), async (req, res) => {
 
         banner.updatedAt = new Date();
         await banner.save();
+        if (banner.image !== previousImage) {
+            await cleanupBannerImage(previousImage);
+        }
 
         res.json({
             success: true,
@@ -302,6 +316,7 @@ router.put('/:id/json', async (req, res) => {
         }
 
         const { title, subtitle, link, position, active, order, image } = req.body || {};
+        const previousImage = banner.image;
 
         if (title !== undefined) banner.title = title;
         if (subtitle !== undefined) banner.subtitle = subtitle;
@@ -321,6 +336,9 @@ router.put('/:id/json', async (req, res) => {
 
         banner.updatedAt = new Date();
         await banner.save();
+        if (banner.image !== previousImage) {
+            await cleanupBannerImage(previousImage);
+        }
 
         res.json({
             success: true,
@@ -348,7 +366,9 @@ router.delete('/:id', async (req, res) => {
             });
         }
 
+        const bannerImage = banner.image;
         await Banner.findByIdAndDelete(req.params.id);
+        await cleanupBannerImage(bannerImage);
 
         res.json({
             success: true,

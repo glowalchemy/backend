@@ -19,7 +19,7 @@
 // Optional:
 //   STORAGE_SIGNED_URL_EXPIRES_IN -> presigned URL lifetime in seconds (default 3600)
 
-const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
 const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 const REQUIRED_VARS = [
@@ -155,6 +155,66 @@ async function getSignedDownloadUrl(key, { expiresIn = signedUrlExpiresIn } = {}
   return getSignedUrl(s3, command, { expiresIn });
 }
 
+/** Delete a single object. Missing objects are treated as success. */
+async function deleteObject(key) {
+  if (!isSafeKey(key)) {
+    const err = new Error('Refusing to delete unsafe object key');
+    err.statusCode = 400;
+    throw err;
+  }
+  try {
+    await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+  } catch (error) {
+    // S3/B2 returns 404/NoSuchKey for already-deleted objects — not an error.
+    const status = error && error.$metadata && error.$metadata.httpStatusCode;
+    const name = String(error && error.name || '');
+    if (status === 404 || name === 'NoSuchKey' || name === 'NotFound') return;
+    throw error;
+  }
+}
+
+/**
+ * Delete up to 1000 objects in one batch request (S3 limit). Missing objects
+ * are ignored; per-key errors are collected and thrown as a summary error so
+ * callers can log without aborting the whole cleanup.
+ */
+async function deleteObjects(keys) {
+  const unique = [...new Set((keys || []).map((k) => String(k || '').trim()).filter((k) => isSafeKey(k)))];
+  if (unique.length === 0) return { deleted: 0, failed: [] };
+
+  const failed = [];
+  for (let i = 0; i < unique.length; i += 1000) {
+    const chunk = unique.slice(i, i + 1000);
+    try {
+      const res = await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: bucket,
+          Delete: { Objects: chunk.map((Key) => ({ Key })), Quiet: true },
+        })
+      );
+      for (const e of res.Errors || []) {
+        failed.push({ key: e.Key, code: e.Code, message: e.Message });
+      }
+    } catch (error) {
+      // Whole-batch failure (network/credentials): fall back to per-key deletes
+      // so one bad object cannot block the rest.
+      for (const key of chunk) {
+        try {
+          await deleteObject(key);
+        } catch (e) {
+          failed.push({ key, code: e && e.name, message: e && e.message });
+        }
+      }
+    }
+  }
+  if (failed.length > 0) {
+    const err = new Error(`Failed to delete ${failed.length} object(s)`);
+    err.failedObjects = failed;
+    throw err;
+  }
+  return { deleted: unique.length, failed: [] };
+}
+
 // ---------------------------------------------------------------------------
 // Key safety
 // ---------------------------------------------------------------------------
@@ -265,6 +325,8 @@ module.exports = {
   signedUrlExpiresIn,
   assertStorageConfig,
   uploadObject,
+  deleteObject,
+  deleteObjects,
   getSignedDownloadUrl,
   getObjectBuffer,
   getObjectStream,

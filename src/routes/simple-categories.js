@@ -6,6 +6,16 @@ const { ProductModel } = require('../models/product');
 const { authenticateAdmin, requireAdmin } = require('../middleware/adminAuth');
 const catalogService = require('../services/catalogService');
 const cacheService = require('../services/cacheService');
+const { resolveAssetUrl, isImageUrl } = require('../config/storage');
+const { deleteAssetIfUnreferenced } = require('../services/imageMedia');
+
+const IMAGE_URL_ERROR = 'Image must be an image URL (jpg, png, jpeg, webp, avif, gif, svg, bmp, tiff, ico) - no other file formats are allowed';
+
+function parseImageUrl(value) {
+    const imageUrl = String(value ?? '').trim();
+    if (imageUrl && !isImageUrl(imageUrl)) return { error: IMAGE_URL_ERROR };
+    return { imageUrl };
+}
 
 // GET /api/categories - Get all categories
 router.get('/', async (req, res) => {
@@ -65,7 +75,7 @@ router.get('/', async (req, res) => {
                 active: c.active,
                 productCount: countById.get(String(c._id)) ?? c.productCount ?? 0,
                 subProductCount: countBySub.get(String(c._id)) ?? 0,
-                imageUrl: c.imageUrl,
+                imageUrl: resolveAssetUrl(req, c.imageUrl),
             }))
         );
     } catch (error) {
@@ -91,7 +101,7 @@ router.get('/:id', async (req, res) => {
             order: category.order,
             active: category.active,
             productCount: category.productCount,
-            imageUrl: category.imageUrl,
+            imageUrl: resolveAssetUrl(req, category.imageUrl),
         });
     } catch (error) {
         console.error('Failed to fetch category:', error);
@@ -104,6 +114,9 @@ router.post('/', authenticateAdmin, requireAdmin, async (req, res) => {
         const name = String(req.body?.name ?? '').trim();
         if (!name) return res.status(400).json({ success: false, message: 'Name is required' });
 
+        const { imageUrl, error: imageError } = parseImageUrl(req.body?.imageUrl);
+        if (imageError) return res.status(400).json({ success: false, message: imageError });
+
         const created = await CategoryModel.create({
             name,
             shortDescription: String(req.body?.shortDescription ?? ''),
@@ -111,7 +124,7 @@ router.post('/', authenticateAdmin, requireAdmin, async (req, res) => {
             parentId: req.body?.parentId ?? null,
             order: Number.isFinite(req.body?.order) ? req.body.order : Number(req.body?.order ?? 0),
             active: typeof req.body?.active === 'boolean' ? req.body.active : req.body?.active !== 'false',
-            imageUrl: String(req.body?.imageUrl ?? ''),
+            imageUrl,
             productCount: 0,
         });
 
@@ -125,7 +138,7 @@ router.post('/', authenticateAdmin, requireAdmin, async (req, res) => {
             order: created.order,
             active: created.active,
             productCount: created.productCount,
-            imageUrl: created.imageUrl,
+            imageUrl: resolveAssetUrl(req, created.imageUrl),
         });
     } catch (error) {
         console.error('Failed to create category:', error);
@@ -138,6 +151,9 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         const name = String(req.body?.name ?? '').trim();
         if (!name) return res.status(400).json({ success: false, message: 'Name is required' });
 
+        const { imageUrl, error: imageError } = parseImageUrl(req.body?.imageUrl);
+        if (imageError) return res.status(400).json({ success: false, message: imageError });
+
         const updated = await CategoryModel.findByIdAndUpdate(
             req.params.id,
             {
@@ -147,7 +163,7 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
                 parentId: req.body?.parentId ?? null,
                 order: Number.isFinite(req.body?.order) ? req.body.order : Number(req.body?.order ?? 0),
                 active: typeof req.body?.active === 'boolean' ? req.body.active : req.body?.active !== 'false',
-                imageUrl: String(req.body?.imageUrl ?? ''),
+                imageUrl,
             },
             { new: true }
         ).lean();
@@ -164,7 +180,7 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
             order: updated.order,
             active: updated.active,
             productCount: updated.productCount,
-            imageUrl: updated.imageUrl,
+            imageUrl: resolveAssetUrl(req, updated.imageUrl),
         });
     } catch (error) {
         console.error('Failed to update category:', error);
@@ -180,6 +196,7 @@ router.delete('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         const deleted = await CategoryModel.findByIdAndDelete(req.params.id).lean();
         if (!deleted) return res.status(404).json({ success: false, message: 'Category not found' });
 
+        await deleteAssetIfUnreferenced(deleted.imageUrl);
         cacheService.invalidateAll();
         res.json({ ok: true });
     } catch (error) {

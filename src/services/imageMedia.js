@@ -19,8 +19,10 @@ const {
   absoluteUrl,
   isSafeKey,
   resolveAssetUrl,
+  deleteObjects,
 } = require('../config/storage');
 const { isOptimizedAssetKey, assetIdFromKey } = require('./imageProcessor');
+const { UploadModel } = require('../models/upload');
 
 const LEGACY_S3_HOST_RE = /^https?:\/\/[^/]+\.s3\.[^/]+\.[^/]+\/(uploads\/.+)$/i;
 
@@ -162,10 +164,35 @@ async function resolveMediaForUrl(req, value) {
   return media;
 }
 
+/**
+ * Best-effort deletion of the storage object(s) behind a stored asset
+ * reference (used when the last known reference — banner, category — is
+ * permanently deleted). Skips external URLs and objects still referenced by
+ * a Media Library `uploads` document (shared assets). Never throws.
+ */
+async function deleteAssetIfUnreferenced(value) {
+  try {
+    const key = keyFromStoredValue(value);
+    if (!key || !isSafeKey(key)) return { deleted: false };
+
+    const shared = await UploadModel.exists({
+      $or: [{ key }, { primaryKey: key }, { originalKey: key }, { 'variants.key': key }],
+    });
+    if (shared) return { deleted: false };
+
+    await deleteObjects([key]);
+    return { deleted: true };
+  } catch (error) {
+    console.error('Asset cleanup failed:', error && error.message ? error.message : error);
+    return { deleted: false };
+  }
+}
+
 module.exports = {
   keyFromStoredValue,
   loadUploadsMap,
   resolveMediaForValue,
   resolveMediaForValues,
   resolveMediaForUrl,
+  deleteAssetIfUnreferenced,
 };
