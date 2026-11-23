@@ -2,10 +2,42 @@ const express = require('express');
 const router = express.Router();
 const Banner = require('../models/banner');
 const { resolveAssetUrl } = require('../config/storage');
+const { resolveMediaForValues } = require('../services/imageMedia');
 
-function serializeBanner(req, banner) {
-    const b = banner.toObject ? banner.toObject() : banner;
-    return { ...b, image: resolveAssetUrl(req, b.image) };
+// Public banners are read-only, public, and change rarely: let browsers reuse
+// the payload and let shared caches serve it. This removes the API round trip
+// (and the resulting image-URL discovery delay) from repeat visits, which is
+// the first link in the hero LCP chain.
+const PUBLIC_CACHE = 'public, max-age=60, s-maxage=300, stale-while-revalidate=600';
+
+function setPublicCache(res) {
+    res.set('Cache-Control', PUBLIC_CACHE);
+    res.set('Vary', 'Accept-Encoding');
+}
+
+/**
+ * Attach responsive media metadata (optimized AVIF/WebP variants + intrinsic
+ * width/height) to banners in ONE batched lookups query. Banners uploaded
+ * before the Sharp pipeline existed simply return `variants: null` and keep
+ * their original URL, so nothing breaks.
+ */
+async function withMedia(req, banners) {
+    if (!Array.isArray(banners) || banners.length === 0) return [];
+    const media = await resolveMediaForValues(req, banners.map((b) => b.image));
+    return banners.map((banner, i) => {
+        const m = media[i] || {};
+        const image = m.url || resolveAssetUrl(req, banner.image);
+        return {
+            ...banner,
+            image,
+            imageMedia: {
+                url: image,
+                variants: m.variants || null,
+                width: m.width || null,
+                height: m.height || null,
+            },
+        };
+    });
 }
 
 // GET /api/banners - Get banners by position
@@ -14,11 +46,17 @@ router.get('/', async (req, res) => {
         const { position, grouped } = req.query;
 
         if (position) {
-            // Only return fields actually used by frontend: image, link, _id
+            // Only return fields actually used by frontend (plus `title` used
+            // as the image alt text).
             const activeBanners = await Banner.find({
                 position: position,
                 active: true
-            }).select('image link _id').sort({ order: 1, createdAt: -1 });
+            })
+                .select('image link title _id position')
+                .sort({ order: 1, createdAt: -1 })
+                .lean();
+
+            setPublicCache(res);
 
             if (!activeBanners || activeBanners.length === 0) {
                 return res.json({
@@ -28,16 +66,21 @@ router.get('/', async (req, res) => {
                 });
             }
 
+            const banners = await withMedia(req, activeBanners);
             return res.json({
                 success: true,
-                banners: activeBanners.map((b) => serializeBanner(req, b))
+                banners
             });
         }
 
         const shouldGroup = grouped === undefined ? true : grouped === 'true';
 
         // If no position specified, return all active banners grouped by position
-        const allBanners = await Banner.find({ active: true }).sort({ order: 1, createdAt: -1 });
+        const allBanners = await Banner.find({ active: true })
+            .sort({ order: 1, createdAt: -1 })
+            .lean();
+
+        setPublicCache(res);
 
         if (!allBanners || allBanners.length === 0) {
             return res.json({
@@ -47,21 +90,22 @@ router.get('/', async (req, res) => {
             });
         }
 
+        const serialized = await withMedia(req, allBanners);
+
         if (!shouldGroup) {
             return res.json({
                 success: true,
-                banners: allBanners.map((b) => serializeBanner(req, b))
+                banners: serialized
             });
         }
 
         // Group banners by position
         const groupedBanners = {};
-        allBanners.forEach(banner => {
-            const serialized = serializeBanner(req, banner);
-            if (!groupedBanners[serialized.position]) {
-                groupedBanners[serialized.position] = [];
+        serialized.forEach((banner) => {
+            if (!groupedBanners[banner.position]) {
+                groupedBanners[banner.position] = [];
             }
-            groupedBanners[serialized.position].push(serialized);
+            groupedBanners[banner.position].push(banner);
         });
 
         res.json({

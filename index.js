@@ -3,6 +3,10 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const requestContext = require('./src/middleware/requestContext');
+const { errorHandler, notFoundHandler, rateLimitHandler } = require('./src/middleware/errorHandler');
+const { standardizeErrorResponses } = require('./src/middleware/responseErrors');
+const compression = require('compression');
 const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
@@ -135,6 +139,7 @@ const publicLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: getRateLimitKey,
+  handler: rateLimitHandler,
   skip: (req) => req.method === 'OPTIONS'
     || String(req.path || '').startsWith('/socket.io')
     || String(req.path || '').startsWith('/shipping/webhook/shiprocket'),
@@ -148,6 +153,7 @@ const authLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: getRateLimitKey,
+  handler: rateLimitHandler,
   skip: (req) => req.method === 'OPTIONS' || String(req.path || '').startsWith('/ping'),
 });
 
@@ -159,12 +165,31 @@ const adminLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: getRateLimitKey,
+  handler: rateLimitHandler,
   skip: (req) => req.method === 'OPTIONS',
 });
 
 // Middleware
 app.use(helmet({
   contentSecurityPolicy: false
+}));
+
+// Correlation id for every request (also added to error responses and logs),
+// registered first so rate-limit and body-parser failures still carry one.
+app.use(requestContext);
+// Upgrade every legacy `{ success: false, message }` reply to the standard
+// `error: { code, message, requestId }` envelope (additive, compatibility-safe).
+app.use(standardizeErrorResponses);
+
+// JSON/JS/HTML responses are highly compressible: gzip/brotli typically
+// shrinks catalog payloads by ~75%, which directly reduces API time on slow
+// mobile connections. Threshold keeps tiny responses uncompressed.
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) return false;
+    return compression.filter(req, res);
+  },
 }));
 const corsOptions = {
   origin: config.corsOriginCallback,
@@ -200,9 +225,15 @@ app.use((req, res, next) => {
   if (req.path === '/api/health') return next();
   if (req.method === 'OPTIONS') return next();
   if (isDbConnected) return next();
+  const message = 'The service is temporarily unavailable. Please try again in a moment.';
   return res.status(503).json({
     success: false,
-    message: 'Database not connected. Please try again in a moment.',
+    message,
+    error: {
+      code: 'DATABASE_UNAVAILABLE',
+      message,
+      requestId: req.id || '',
+    },
   });
 });
 
@@ -250,6 +281,11 @@ app.get('/api/health', (req, res) => {
     database: isDbConnected ? 'connected' : 'disconnected',
   });
 });
+
+// Unmatched API/media paths answer JSON (never an HTML error page), then any
+// error thrown above is converted into the single standard envelope.
+app.use(notFoundHandler);
+app.use(errorHandler);
 
 // MongoDB connection
 let activePort = BASE_PORT;

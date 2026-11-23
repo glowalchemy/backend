@@ -22,7 +22,17 @@
 // Never logs signed URLs or credentials.
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+const dns = require('node:dns');
 const mongoose = require('mongoose');
+
+// Apply the same DNS servers the API server uses: on networks whose resolver
+// refuses SRV queries, MongoDB Atlas (`mongodb+srv://`) cannot resolve without
+// this and the whole backfill fails with querySrv ECONNREFUSED.
+const dnsServers = String(process.env.DNS_SERVERS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+if (dnsServers.length) dns.setServers(dnsServers);
 const { S3Client, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const {
   uploadObject,
@@ -73,10 +83,12 @@ async function listAllObjects(s3) {
 function isEligible(key) {
   if (!isSafeKey(key)) return false;
   if (isVariantObjectKey(key)) return false; // already an optimized variant
-  // Only image files (root-level image keys or uploads/* originals).
+  // Any image object under uploads/ qualifies — including legacy uploads made
+  // before the Sharp pipeline existed (e.g. uploads/banners/<ts>-<hash>.jpg),
+  // which is exactly the set that lacks responsive variants today.
   if (/^uploads\//.test(key)) {
     const base = key.split('/').pop() || '';
-    return /^original\.(avif|webp|png|jpe?g|gif|bmp|svgz?|ico|tif{1,2})$/i.test(base);
+    return /\.(avif|webp|png|jpe?g|gif|bmp|svgz?|ico|tif{1,2})$/i.test(base);
   }
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]*\.(avif|webp|png|jpe?g|gif|bmp|svgz?|ico|tif{1,2})$/i.test(key);
 }
@@ -184,7 +196,18 @@ async function main() {
     console.error('Missing MONGODB_URI in backend/.env');
     process.exit(1);
   }
-  await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 15000 });
+  try {
+    await mongoose.connect(mongoUri, { serverSelectionTimeoutMS: 15000 });
+  } catch (error) {
+    // Same fallback as the API server: when DNS SRV lookups are blocked, use
+    // the standard (non-SRV) connection string if one is configured.
+    const standardUri = process.env.MONGODB_URI_STANDARD;
+    const isSrvError = String(error?.message || '').includes('querySrv')
+      || String(error?.code || '') === 'ECONNREFUSED';
+    if (!standardUri || !isSrvError) throw error;
+    console.log('SRV lookup failed — retrying with MONGODB_URI_STANDARD...');
+    await mongoose.connect(standardUri, { serverSelectionTimeoutMS: 15000 });
+  }
 
   const s3 = new S3Client({
     region,

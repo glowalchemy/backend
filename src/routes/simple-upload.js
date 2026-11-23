@@ -21,6 +21,7 @@ const {
 } = require('../services/imageProcessor');
 const { processAndStoreImage } = require('../services/imageService');
 const { UploadModel } = require('../models/upload');
+const { ApiError } = require('../lib/apiError');
 
 router.get('/list', authenticateAdmin, requireAdmin, async (req, res) => {
     try {
@@ -120,7 +121,16 @@ const upload = multer({
         if (mime.startsWith('image/') || allowedMime.has(mime) || allowedExt.has(ext)) {
             cb(null, true);
         } else {
-            cb(new Error('Only image files are allowed'));
+            // A rejected file type is a client error (415), not a server crash.
+            // Content is still verified by signature in processAndStoreImage.
+            cb(
+                new ApiError({
+                    status: 415,
+                    code: 'UNSUPPORTED_FORMAT',
+                    message:
+                        'This file type is not supported. Please choose a JPG, PNG, WebP, AVIF, GIF or SVG image.',
+                })
+            );
         }
     },
 });
@@ -132,10 +142,14 @@ function safeFolder(req) {
 }
 
 /** Shared upload handler for admin + public image uploads. */
-async function handleImageUpload(req, res) {
+async function handleImageUpload(req, res, next) {
     try {
         if (!req.file) {
-            return res.status(400).json({ success: false, message: 'No image file provided' });
+            throw new ApiError({
+                status: 400,
+                code: 'EMPTY_FILE',
+                message: 'No file was received. Please choose a file and try again.',
+            });
         }
 
         const result = await processAndStoreImage({
@@ -148,12 +162,24 @@ async function handleImageUpload(req, res) {
 
         return res.json({ success: true, message: 'Image uploaded successfully', ...result });
     } catch (error) {
-        if (error && error.statusCode) {
-            return res.status(error.statusCode).json({ success: false, message: error.message });
+        // Validation failures carry a curated, safe message and a stable code;
+        // the central handler maps them to 413/415/422 with a request id.
+        if (error && (error.name === 'ImageValidationError' || error.statusCode || error.status)) {
+            return next(error);
         }
+
+        // Storage (B2) or processing outage: report it as an upstream failure so
+        // the admin upload queue retries it, never as a user mistake.
         const status = error?.$metadata?.httpStatusCode;
-        console.error('Upload error:', { operation: 'putObject', status: status || 500, code: error?.name, reason: error?.message });
-        res.status(500).json({ success: false, message: 'Failed to upload image' });
+        console.error('Upload error:', { requestId: req.id, operation: 'putObject', status: status || 500, code: error?.name });
+        return next(
+            new ApiError({
+                status: 502,
+                code: 'UPLOAD_UNAVAILABLE',
+                message: 'Upload failed because the server is temporarily unavailable. Please try again.',
+                cause: error,
+            })
+        );
     }
 }
 
@@ -256,9 +282,11 @@ router.get('/file/*', async (req, res) => {
         // Legacy / original: 302 to a fresh presigned GET.
         const signedUrl = await getSignedDownloadUrl(key);
 
-        // Private, non-cacheable so the short-lived URL is not persisted by
-        // intermediate caches after it expires.
-        res.setHeader('Cache-Control', 'private, no-store');
+        // `private` keeps the signed URL out of shared/intermediate caches,
+        // while a short max-age lets the SAME browser reuse it. That skips the
+        // extra 302 round trip on repeat views (the URL stays valid for an
+        // hour, this cache window is 5 minutes).
+        res.setHeader('Cache-Control', 'private, max-age=300');
 
         // Helmet's default `Cross-Origin-Resource-Policy: same-origin` would
         // make Chromium block this redirect when the frontend lives on a

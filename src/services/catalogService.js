@@ -284,6 +284,20 @@ async function mapProducts(req, products) {
 // management blobs, no unrelated fields).
 // ---------------------------------------------------------------------------
 
+// Field projection for the ADMIN product table: only the columns that table
+// renders (image, name, badge, sku, category, price, stock, status, featured,
+// createdAt). The heavy per-product blobs (attributes, seo, shipping,
+// marketing, keyFeatures, colorVariants) are not sent at all — the product
+// editor fetches the full document from /api/products/:id/management instead.
+const ADMIN_LIST_PROJECTION = {
+  _id: 1, slug: 1, name: 1, sku: 1, price: 1, originalPrice: 1, stock: 1, status: 1, visibility: 1,
+  image: 1, galleryImages: 1, category: 1, badge: 1, featured: 1, rating: 1,
+  saleEnabled: 1, saleDiscount: 1, saleStartDate: 1, saleEndDate: 1,
+  createdAt: 1, updatedAt: 1,
+  'management.basic': 1, 'management.pricing': 1, 'management.inventory': 1, 'management.media': 1,
+  'management.marketing.featured': 1, 'management.marketing.badge': 1,
+};
+
 const LISTING_PROJECTION = {
   _id: 1, slug: 1, name: 1, sku: 1, price: 1, originalPrice: 1, stock: 1, status: 1, visibility: 1,
   image: 1, galleryImages: 1, category: 1, categoryId: 1, subCategoryId: 1, description: 1,
@@ -587,7 +601,11 @@ async function queryCatalog({ req, mode = 'public', category, subCategoryId, q, 
   const products = db.collection('products');
 
   // Use basic projection for home page sliders to reduce payload
-  const projection = fields === 'basic' ? BASIC_PROJECTION : LISTING_PROJECTION;
+  const projection = fields === 'basic'
+    ? BASIC_PROJECTION
+    : fields === 'admin-list'
+      ? ADMIN_LIST_PROJECTION
+      : LISTING_PROJECTION;
 
   // Search path: build the search filter and rank by relevance.
   if (q) {

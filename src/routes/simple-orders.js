@@ -96,6 +96,26 @@ router.post('/cod', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order items are required' });
     }
 
+    // Idempotency: a double submit (double click, client retry after a timeout)
+    // must not create a second order or a second Shiprocket shipment. The
+    // client sends one stable id per checkout attempt; a repeat returns the
+    // order that already exists. Absent header/field = previous behaviour.
+    const clientRequestId = String(req.body?.clientRequestId || '').trim().slice(0, 100);
+    if (clientRequestId) {
+      const existing = await db.collection('orders').findOne({
+        user: new mongoose.Types.ObjectId(auth.userId),
+        clientRequestId,
+      });
+      if (existing) {
+        return res.json({
+          success: true,
+          duplicate: true,
+          id: String(existing._id),
+          orderNumber: existing.orderNumber,
+        });
+      }
+    }
+
     const productIds = items
       .map((it) => String(it?.productId || '').trim())
       .filter((id) => id && mongoose.Types.ObjectId.isValid(id));
@@ -138,6 +158,7 @@ router.post('/cod', async (req, res) => {
     const insert = await db.collection('orders').insertOne({
       user: new mongoose.Types.ObjectId(auth.userId),
       orderNumber,
+      ...(clientRequestId ? { clientRequestId } : {}),
       status: 'new',
       createdAt: new Date(nowIso),
       updatedAt: new Date(nowIso),

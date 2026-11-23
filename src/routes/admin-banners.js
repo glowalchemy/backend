@@ -13,6 +13,9 @@ const {
     isImageUrl,
 } = require('../config/storage');
 const { deleteAssetIfUnreferenced } = require('../services/imageMedia');
+const { processAndStoreImage } = require('../services/imageService');
+const cacheService = require('../services/cacheService');
+const { ApiError } = require('../lib/apiError');
 
 /**
  * Best-effort cleanup of the B2 object(s) backing a banner image.
@@ -62,6 +65,7 @@ router.post('/json', async (req, res) => {
         });
 
         await newBanner.save();
+        invalidateCatalogCaches();
 
         res.status(201).json({
             success: true,
@@ -83,10 +87,17 @@ const upload = multer({
         fileSize: 10 * 1024 * 1024 // 10MB limit for banners
     },
     fileFilter: (req, file, cb) => {
-        if (file.mimetype.startsWith('image/')) {
+        if (String(file.mimetype || '').startsWith('image/')) {
             cb(null, true);
         } else {
-            cb(new Error('Only image files are allowed'));
+            // Client error (415), never a 500: the file is simply the wrong type.
+            cb(
+                new ApiError({
+                    status: 415,
+                    code: 'UNSUPPORTED_FORMAT',
+                    message: 'This file type is not supported. Please choose a JPG, PNG, WebP, AVIF, GIF or SVG image.',
+                })
+            );
         }
     }
 });
@@ -94,21 +105,47 @@ const upload = multer({
 async function uploadBannerToStorage(req, file) {
     const extRaw = String(file.originalname || '').split('.').pop() || 'bin';
     const ext = String(extRaw).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 10) || 'bin';
-    const random = crypto.randomBytes(12).toString('hex');
-    const key = `uploads/banners/${Date.now()}-${random}.${ext}`;
 
-    await uploadObject({
-        key,
-        body: file.buffer,
-        contentType: file.mimetype,
-    });
+    // SVG is vector (already tiny) and must not be rasterized — store it as-is.
+    if (String(file.mimetype || '').toLowerCase() === 'image/svg+xml') {
+        const random = crypto.randomBytes(12).toString('hex');
+        const key = `uploads/banners/${Date.now()}-${random}.${ext}`;
+        await uploadObject({ key, body: file.buffer, contentType: file.mimetype });
+        return { key, url: absoluteUrl(req, proxyPathFor(key)) };
+    }
 
-    // Stable proxy URL (no credentials, never expires) — the proxy mints a
-    // fresh presigned URL per request.
-    return {
-        key,
-        url: absoluteUrl(req, proxyPathFor(key)),
-    };
+    // Raster banners go through the same Sharp pipeline as product images so
+    // they gain immutable 320/640/1200 AVIF+WebP variants. Without this the
+    // hero banner is a multi-hundred-KB original served through a 302 to B2,
+    // which is the single largest LCP cost on the homepage.
+    try {
+        const processed = await processAndStoreImage({
+            buffer: file.buffer,
+            mimetype: file.mimetype,
+            originalName: file.originalname,
+            folder: 'banners',
+            req,
+        });
+        return { key: processed.key, url: processed.url, variants: processed.variants };
+    } catch (error) {
+        // A banner must still upload if variant generation fails (e.g. exotic
+        // input): fall back to the previous raw-object behaviour.
+        if (error && error.statusCode === 400) throw error;
+        console.error('Banner variant generation failed, falling back to original:', error?.message);
+        const random = crypto.randomBytes(12).toString('hex');
+        const key = `uploads/banners/${Date.now()}-${random}.${ext}`;
+        await uploadObject({ key, body: file.buffer, contentType: file.mimetype });
+        return { key, url: absoluteUrl(req, proxyPathFor(key)) };
+    }
+}
+
+/** Drop cached catalog/banner payloads (no-op for the public HTTP cache, which is short-lived). */
+function invalidateCatalogCaches() {
+    try {
+        cacheService.invalidateAll();
+    } catch (_e) {
+        /* best effort */
+    }
 }
 
 // GET /api/admin/banners - Get all banners
@@ -188,7 +225,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // POST /api/admin/banners - Create new banner with image upload
-router.post('/', upload.single('image'), async (req, res) => {
+router.post('/', upload.single('image'), async (req, res, next) => {
     try {
         const { title, subtitle, link, position, active, order } = req.body;
 
@@ -231,6 +268,7 @@ router.post('/', upload.single('image'), async (req, res) => {
         });
 
         await newBanner.save();
+        invalidateCatalogCaches();
 
         res.status(201).json({
             success: true,
@@ -238,16 +276,21 @@ router.post('/', upload.single('image'), async (req, res) => {
             banner: serializeBanner(req, newBanner)
         });
     } catch (error) {
+        // Validation/processing failures (bad image, too large, unsupported
+        // format) are client errors: let the central handler classify them.
+        if (error && (error.statusCode || error.status || error.name === 'ImageValidationError')) {
+            return next(error);
+        }
         console.error('Error creating banner:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to create banner: ' + error.message
+            message: 'Failed to create banner'
         });
     }
 });
 
 // PUT /api/admin/banners/:id - Update banner
-router.put('/:id', upload.single('image'), async (req, res) => {
+router.put('/:id', upload.single('image'), async (req, res, next) => {
     try {
         const banner = await Banner.findById(req.params.id);
 
@@ -285,6 +328,7 @@ router.put('/:id', upload.single('image'), async (req, res) => {
 
         banner.updatedAt = new Date();
         await banner.save();
+        invalidateCatalogCaches();
         if (banner.image !== previousImage) {
             await cleanupBannerImage(previousImage);
         }
@@ -295,10 +339,13 @@ router.put('/:id', upload.single('image'), async (req, res) => {
             banner: serializeBanner(req, banner)
         });
     } catch (error) {
+        if (error && (error.statusCode || error.status || error.name === 'ImageValidationError')) {
+            return next(error);
+        }
         console.error('Error updating banner:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to update banner: ' + error.message
+            message: 'Failed to update banner'
         });
     }
 });
@@ -336,6 +383,7 @@ router.put('/:id/json', async (req, res) => {
 
         banner.updatedAt = new Date();
         await banner.save();
+        invalidateCatalogCaches();
         if (banner.image !== previousImage) {
             await cleanupBannerImage(previousImage);
         }
@@ -368,6 +416,7 @@ router.delete('/:id', async (req, res) => {
 
         const bannerImage = banner.image;
         await Banner.findByIdAndDelete(req.params.id);
+        invalidateCatalogCaches();
         await cleanupBannerImage(bannerImage);
 
         res.json({
@@ -398,6 +447,7 @@ router.put('/:id/toggle', async (req, res) => {
         banner.active = !banner.active;
         banner.updatedAt = new Date();
         await banner.save();
+        invalidateCatalogCaches();
 
         res.json({
             success: true,
@@ -414,13 +464,16 @@ router.put('/:id/toggle', async (req, res) => {
 });
 
 // POST /api/admin/banners/upload - Upload banner image separately
-router.post('/upload', authenticateAdmin, requireAdmin, upload.single('image'), async (req, res) => {
+router.post('/upload', authenticateAdmin, requireAdmin, upload.single('image'), async (req, res, next) => {
     try {
         if (!req.file) {
-            return res.status(400).json({
-                success: false,
-                message: 'No image file provided'
-            });
+            return next(
+                new ApiError({
+                    status: 400,
+                    code: 'EMPTY_FILE',
+                    message: 'No file was received. Please choose a file and try again.',
+                })
+            );
         }
 
         const s3Obj = await uploadBannerToStorage(req, req.file);
@@ -434,10 +487,13 @@ router.post('/upload', authenticateAdmin, requireAdmin, upload.single('image'), 
             size: req.file.size
         });
     } catch (error) {
-        console.error('Banner upload error:', error);
+        if (error && (error.statusCode || error.status || error.name === 'ImageValidationError')) {
+            return next(error);
+        }
+        console.error('Banner upload error:', { requestId: req.id, name: error?.name, status: error?.$metadata?.httpStatusCode });
         res.status(500).json({
             success: false,
-            message: 'Failed to upload banner image: ' + error.message
+            message: 'Upload failed because the server is temporarily unavailable. Please try again.'
         });
     }
 });

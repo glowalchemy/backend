@@ -8,7 +8,16 @@
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
+const dns = require('node:dns');
 const mongoose = require('mongoose');
+
+// Same DNS handling as the API server: SRV lookups (mongodb+srv://) fail on
+// networks whose resolver refuses them unless these servers are applied.
+const dnsServers = String(process.env.DNS_SERVERS || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+if (dnsServers.length) dns.setServers(dnsServers);
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
@@ -53,18 +62,47 @@ const CATEGORY_INDEXES = [
   },
 ];
 
+// Every public banner read filters on {position, active} and sorts on
+// {order, createdAt}; without this index that is a full collection scan on each
+// of the five homepage sections.
+const BANNER_INDEXES = [
+  {
+    name: 'position_active_order_createdAt',
+    key: { position: 1, active: 1, order: 1, createdAt: -1 },
+    why: 'Public banner reads by position (home_hero, home_ad_grid, ...).',
+  },
+];
+
+// Guard against duplicate order creation when a checkout request is retried.
+// Partial filter keeps the index off legacy orders that have no such field.
+const ORDER_INDEXES = [
+  {
+    name: 'user_clientRequestId',
+    key: { user: 1, clientRequestId: 1 },
+    options: { unique: true, partialFilterExpression: { clientRequestId: { $type: 'string' } } },
+    why: 'Idempotent COD order creation (one order per checkout attempt).',
+  },
+];
+
 async function main() {
   await mongoose.connect(process.env.MONGODB_URI || '', { serverSelectionTimeoutMS: 20000 });
   const db = mongoose.connection.db;
 
-  for (const [collection, indexes] of [['products', PRODUCT_INDEXES], ['categories', CATEGORY_INDEXES]]) {
+  const collections = [
+    ['products', PRODUCT_INDEXES],
+    ['categories', CATEGORY_INDEXES],
+    ['banners', BANNER_INDEXES],
+    ['orders', ORDER_INDEXES],
+  ];
+
+  for (const [collection, indexes] of collections) {
     console.log(`\n=== ${collection} ===`);
     for (const ix of indexes) {
       console.log(`  ${DRY_RUN ? '[dry-run] would create' : 'creating'} ${ix.name}: ${JSON.stringify(ix.key)}`);
       console.log(`    why: ${ix.why}`);
       if (!DRY_RUN) {
         try {
-          await db.collection(collection).createIndex(ix.key, { name: ix.name });
+          await db.collection(collection).createIndex(ix.key, { name: ix.name, ...(ix.options || {}) });
           console.log('    -> ok');
         } catch (e) {
           console.error(`    -> FAILED: ${e.message}`);
