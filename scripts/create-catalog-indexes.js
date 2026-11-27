@@ -23,6 +23,13 @@ const DRY_RUN = process.argv.includes('--dry-run');
 
 const PRODUCT_INDEXES = [
   {
+    name: 'slug_unique',
+    key: { slug: 1 },
+    options: { unique: true },
+    why: 'Public product URLs are root-level slugs — must be globally unique. ' +
+         'Run scripts/migrate-product-slugs.js first if duplicate slugs exist.',
+  },
+  {
     name: 'status_visibility_createdAt',
     key: { status: 1, visibility: 1, createdAt: -1 },
     why: 'Default public listing + newest sort (most common catalog query).',

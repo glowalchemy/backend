@@ -42,6 +42,9 @@ const ColorVariantSchema = new mongoose.Schema({
 
 const ProductSchema = new mongoose.Schema({
     slug: { type: String, required: true, trim: true, index: true },
+    // 'auto' = generated from first 3 product-name words; 'custom' = admin slug.
+    slugGenerationMode: { type: String, enum: ['auto', 'custom'], default: 'auto' },
+    slugUpdatedAt: { type: Date, default: null },
     visibility: { type: String, required: true, enum: ["public", "private"], default: "public" },
     name: { type: String, required: true, trim: true },
     sku: { type: String, required: true, trim: true },

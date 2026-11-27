@@ -10,6 +10,7 @@ const { Order } = require('../models/order');
 const { resolveAssetUrl, isImageUrl } = require('../config/storage');
 const catalogService = require('../services/catalogService');
 const cacheService = require('../services/cacheService');
+const slugService = require('../services/productSlugService');
 const { syncSearchProjection } = require('../services/productNormalizer');
 
 const { mapProducts, listPublic, parseIntQuery } = catalogService;
@@ -69,11 +70,68 @@ async function validateSubCategoryOrThrow(base) {
     }
 }
 
+/**
+ * Enforce the required fields declared by the Product mongoose schema
+ * (name, sku, originalPrice, price, stock). These writes bypass Mongoose, so
+ * the contract is checked explicitly here.
+ */
+function validateRequiredFieldsOrThrow(base, pricing, inventory) {
+    const fail = (msg) => {
+        const err = new Error(msg);
+        err.statusCode = 400;
+        throw err;
+    };
+    if (!String(base?.name ?? '').trim()) fail('Product name is required');
+    if (!String(inventory?.sku ?? '').trim()) fail('SKU is required');
+    if (!Number.isFinite(Number(pricing?.originalPrice))) fail('Original price is required');
+    if (!Number.isFinite(Number(pricing?.sellingPrice))) fail('Selling price is required');
+    if (!Number.isFinite(Number(inventory?.stockQuantity))) fail('Stock quantity is required');
+}
+
 function mapStatusToCatalogStatus(status) {
     const s = String(status || '').toLowerCase();
     if (s === 'active') return 'active';
     if (s === 'draft') return 'draft';
     return 'inactive';
+}
+
+/**
+ * Resolve the authoritative slug for a product write through the centralized
+ * slug service. On update, an empty submitted slug preserves the stored one;
+ * a changed slug is validated for format, reserved routes and global
+ * uniqueness (excluding this product) before being accepted.
+ */
+async function resolveSlugForWrite(db, { productId, name, requestedSlug, mode }) {
+    const requested = String(requestedSlug ?? '').trim();
+    const { ObjectId } = require('mongodb');
+
+    if (productId) {
+        const existing = await db.collection('products').findOne(
+            { _id: new ObjectId(String(productId)) },
+            { projection: { slug: 1 } },
+        );
+        const current = String(existing?.slug || '').trim();
+        if (!requested || requested.toLowerCase() === current.toLowerCase()) {
+            return { slug: current, mode: mode === 'custom' ? 'custom' : 'auto', changed: false };
+        }
+        const resolved = await slugService.resolveProductSlug({
+            db, name, requestedSlug: requested, mode, excludeProductId: productId,
+        });
+        return { ...resolved, changed: resolved.slug !== current };
+    }
+
+    return slugService.resolveProductSlug({ db, name, requestedSlug: requested, mode });
+}
+
+/** Send a slug-service error with its machine-readable code intact. */
+function sendSlugError(res, error) {
+    return res.status(error.statusCode || 400).json({
+        success: false,
+        code: error.code || 'SLUG_INVALID',
+        message: error.message,
+        ...(error.suggestions ? { suggestions: error.suggestions } : {}),
+        ...(error.ownerName ? { ownerName: error.ownerName } : {}),
+    });
 }
 
 // GET /api/products/catalog (admin)
@@ -166,7 +224,18 @@ router.get('/:id/management', authenticateAdmin, requireAdmin, async (req, res) 
         const { ObjectId } = require('mongodb');
         const doc = await db.collection('products').findOne({ _id: new ObjectId(req.params.id) });
         if (!doc) return res.status(404).json({ success: false, message: 'Product not found' });
-        res.json(doc.management ?? {});
+        // The top-level `slug` is authoritative; mirror it (and its mode)
+        // into the management blob so the admin form edits the live value
+        // instead of a stale copy.
+        const management = doc.management && typeof doc.management === 'object' ? doc.management : {};
+        res.json({
+            ...management,
+            basic: {
+                ...(management.basic || {}),
+                slug: String(doc.slug || ''),
+                slugMode: doc.slugGenerationMode === 'custom' ? 'custom' : 'auto',
+            },
+        });
     } catch (error) {
         console.error('Error fetching product management:', error);
         res.status(500).json({ success: false, message: 'Failed to fetch product management' });
@@ -199,7 +268,20 @@ router.get('/slug/:slug', async (req, res) => {
         }
 
         const doc = await db.collection('products').findOne(filter);
-        if (!doc) return res.status(404).json({ success: false, message: 'Product not found' });
+        if (!doc) {
+            // Historical slug? Tell the client where the product lives now so
+            // it can redirect (and crawlers eventually see the canonical URL).
+            const moved = await slugService.findSlugRedirect(db, req.params.slug);
+            if (moved && moved.redirectTo) {
+                return res.status(404).json({
+                    success: false,
+                    code: 'SLUG_MOVED',
+                    message: 'This product URL has moved.',
+                    redirectTo: `/${moved.redirectTo}`,
+                });
+            }
+            return res.status(404).json({ success: false, code: 'PRODUCT_NOT_FOUND', message: 'Product not found' });
+        }
         res.json((await mapProducts(req, [doc]))[0]);
     } catch (error) {
         console.error('Error fetching product by slug:', error);
@@ -317,6 +399,7 @@ router.post('/draft', authenticateAdmin, requireAdmin, async (req, res) => {
         const media = values?.media ?? {};
         const shipping = values?.shipping ?? {};
         const dimensions = shipping?.dimensionsCm ?? { length: 0, width: 0, height: 0 };
+        validateRequiredFieldsOrThrow(base, pricing, inventory);
 
         const images = Array.isArray(media?.images) ? media.images : [];
         const thumbId = media?.thumbnailId ?? null;
@@ -330,11 +413,27 @@ router.post('/draft', authenticateAdmin, requireAdmin, async (req, res) => {
         const categoryIds = Array.isArray(base?.categoryIds) ? base.categoryIds : [];
         const category = String(categoryIds[0] ?? '');
 
+        const slugResolution = await resolveSlugForWrite(db, {
+            productId: id || null,
+            name: base.name,
+            requestedSlug: base.slug,
+            mode: base.slugMode,
+        });
+
+        // Keep the management blob's slug fields in sync with the resolved
+        // top-level slug so the admin form always edits the live value.
+        const managementValues = {
+            ...values,
+            basic: { ...base, slug: slugResolution.slug, slugMode: slugResolution.mode },
+        };
+
         const doc = {
-            slug: base.slug,
+            slug: slugResolution.slug,
+            slugGenerationMode: slugResolution.mode,
             visibility: base.visibility,
             name: base.name,
             sku: inventory.sku,
+            originalPrice: Number(pricing.originalPrice) || 0,
             price: pricing.sellingPrice,
             stock: inventory.stockQuantity,
             status: 'draft',
@@ -349,21 +448,38 @@ router.post('/draft', authenticateAdmin, requireAdmin, async (req, res) => {
             shippingCharge: Number(shipping.shippingCharge ?? 0) || 0,
             weight: Number(shipping.weightKg ?? 0) || 0,
             dimensions,
-            management: values,
+            management: managementValues,
             createdAt: now,
             updatedAt: now,
         };
 
         if (id) {
-            await db.collection('products').updateOne({ _id: new ObjectId(id) }, { $set: { ...doc, updatedAt: now } });
+            const previous = await db.collection('products').findOne(
+                { _id: new ObjectId(id) },
+                { projection: { slug: 1 } },
+            );
+            const updateDoc = { ...doc, updatedAt: now };
+            if (slugResolution.changed) updateDoc.slugUpdatedAt = now;
+            await db.collection('products').updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
+            if (slugResolution.changed) {
+                await slugService.recordSlugChange(db, id, previous?.slug, slugResolution.slug);
+            }
             cacheService.invalidateAll();
-            return res.json({ id: String(id) });
+            return res.json({ id: String(id), slug: slugResolution.slug });
         }
 
-        const result = await db.collection('products').insertOne(doc);
+        const result = await db.collection('products').insertOne({ ...doc, slugUpdatedAt: now });
         cacheService.invalidateAll();
-        res.json({ id: String(result.insertedId) });
+        res.json({ id: String(result.insertedId), slug: slugResolution.slug });
     } catch (error) {
+        if (error instanceof slugService.SlugError) return sendSlugError(res, error);
+        if (error && error.code === 11000 && error.keyPattern && error.keyPattern.slug) {
+            return res.status(409).json({
+                success: false,
+                code: 'SLUG_ALREADY_EXISTS',
+                message: 'This product URL is already in use. Choose a different slug.',
+            });
+        }
         if (error && error.statusCode) {
             return res.status(error.statusCode).json({ success: false, message: error.message });
         }
@@ -387,6 +503,7 @@ router.post('/publish', authenticateAdmin, requireAdmin, async (req, res) => {
         validateImageUrlsOrThrow(values);
         const pricing = values?.pricing ?? {};
         const inventory = values?.inventory ?? {};
+        validateRequiredFieldsOrThrow(base, pricing, inventory);
 
         const media = values?.media ?? {};
         const shipping = values?.shipping ?? {};
@@ -404,11 +521,25 @@ router.post('/publish', authenticateAdmin, requireAdmin, async (req, res) => {
         const categoryIds = Array.isArray(base?.categoryIds) ? base.categoryIds : [];
         const category = String(categoryIds[0] ?? '');
 
+        const slugResolution = await resolveSlugForWrite(db, {
+            productId: id || null,
+            name: base.name,
+            requestedSlug: base.slug,
+            mode: base.slugMode,
+        });
+
+        const managementValues = {
+            ...values,
+            basic: { ...base, slug: slugResolution.slug, slugMode: slugResolution.mode },
+        };
+
         const doc = {
-            slug: base.slug,
+            slug: slugResolution.slug,
+            slugGenerationMode: slugResolution.mode,
             visibility: base.visibility,
             name: base.name,
             sku: inventory.sku,
+            originalPrice: Number(pricing.originalPrice) || 0,
             price: pricing.sellingPrice,
             stock: inventory.stockQuantity,
             status: 'active',
@@ -423,24 +554,41 @@ router.post('/publish', authenticateAdmin, requireAdmin, async (req, res) => {
             shippingCharge: Number(shipping.shippingCharge ?? 0) || 0,
             weight: Number(shipping.weightKg ?? 0) || 0,
             dimensions,
-            management: values,
+            management: managementValues,
             updatedAt: now,
         };
 
         if (id) {
-            await db.collection('products').updateOne({ _id: new ObjectId(id) }, { $set: doc });
+            const previous = await db.collection('products').findOne(
+                { _id: new ObjectId(id) },
+                { projection: { slug: 1 } },
+            );
+            const updateDoc = { ...doc };
+            if (slugResolution.changed) updateDoc.slugUpdatedAt = now;
+            await db.collection('products').updateOne({ _id: new ObjectId(id) }, { $set: updateDoc });
             const updated = await db.collection('products').findOne({ _id: new ObjectId(id) });
             if (updated) syncSearchProjection(updated);
+            if (slugResolution.changed) {
+                await slugService.recordSlugChange(db, id, previous?.slug, slugResolution.slug);
+            }
             cacheService.invalidateAll();
-            return res.json({ id: String(id) });
+            return res.json({ id: String(id), slug: slugResolution.slug });
         }
 
-        const created = { ...doc, createdAt: now };
+        const created = { ...doc, createdAt: now, slugUpdatedAt: now };
         const result = await db.collection('products').insertOne(created);
         syncSearchProjection({ ...created, _id: result.insertedId });
         cacheService.invalidateAll();
-        res.json({ id: String(result.insertedId) });
+        res.json({ id: String(result.insertedId), slug: slugResolution.slug });
     } catch (error) {
+        if (error instanceof slugService.SlugError) return sendSlugError(res, error);
+        if (error && error.code === 11000 && error.keyPattern && error.keyPattern.slug) {
+            return res.status(409).json({
+                success: false,
+                code: 'SLUG_ALREADY_EXISTS',
+                message: 'This product URL is already in use. Choose a different slug.',
+            });
+        }
         if (error && error.statusCode) {
             return res.status(error.statusCode).json({ success: false, message: error.message });
         }
@@ -466,6 +614,7 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         const media = values?.media ?? {};
         const shipping = values?.shipping ?? {};
         const dimensions = shipping?.dimensionsCm ?? { length: 0, width: 0, height: 0 };
+        validateRequiredFieldsOrThrow(base, pricing, inventory);
 
         const images = Array.isArray(media?.images) ? media.images : [];
         const thumbId = media?.thumbnailId ?? null;
@@ -482,22 +631,50 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         const nextStatus = mapStatusToCatalogStatus(base?.status);
         const nextVisibility = String(base?.visibility || 'public');
         const nextName = String(base?.name || '').trim();
-        const nextSlug = String(base?.slug || '').trim();
         const nextSku = String(inventory?.sku || '').trim();
+        const nextOriginalPrice = Number(pricing?.originalPrice ?? NaN);
         const nextPrice = Number(pricing?.sellingPrice ?? NaN);
         const nextStock = Number(inventory?.stockQuantity ?? NaN);
         const nextDescription = typeof base?.shortDescription === 'string' ? base.shortDescription : '';
+
+        const slugResolution = await resolveSlugForWrite(db, {
+            productId: req.params.id,
+            name: nextName || undefined,
+            requestedSlug: base?.slug,
+            mode: base?.slugMode,
+        });
+
+        const managementValues = {
+            ...values,
+            basic: { ...base, slug: slugResolution.slug, slugMode: slugResolution.mode },
+        };
+
+        const previous = await db.collection('products').findOne(
+            { _id: new ObjectId(req.params.id) },
+            { projection: { slug: 1, name: 1 } },
+        );
+        if (!previous) {
+            return res.status(404).json({ success: false, message: 'Product not found' });
+        }
+
+        const slugUpdate = {};
+        if (slugResolution.changed) {
+            slugUpdate.slug = slugResolution.slug;
+            slugUpdate.slugGenerationMode = slugResolution.mode;
+            slugUpdate.slugUpdatedAt = now;
+        }
 
         await db.collection('products').updateOne(
             { _id: new ObjectId(req.params.id) },
             {
                 $set: {
-                    management: values,
+                    management: managementValues,
                     status: nextStatus,
                     visibility: nextVisibility,
                     ...(nextName ? { name: nextName } : {}),
-                    ...(nextSlug ? { slug: nextSlug } : {}),
+                    ...slugUpdate,
                     ...(nextSku ? { sku: nextSku } : {}),
+                    ...(Number.isFinite(nextOriginalPrice) ? { originalPrice: nextOriginalPrice } : {}),
                     ...(Number.isFinite(nextPrice) ? { price: nextPrice } : {}),
                     ...(Number.isFinite(nextStock) ? { stock: nextStock } : {}),
                     description: nextDescription,
@@ -516,9 +693,20 @@ router.put('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
         );
         const updated = await db.collection('products').findOne({ _id: new ObjectId(req.params.id) });
         if (updated) syncSearchProjection(updated);
+        if (slugResolution.changed) {
+            await slugService.recordSlugChange(db, req.params.id, previous?.slug, slugResolution.slug);
+        }
         cacheService.invalidateAll();
-        res.json({ id: req.params.id });
+        res.json({ id: req.params.id, slug: slugResolution.slug });
     } catch (error) {
+        if (error instanceof slugService.SlugError) return sendSlugError(res, error);
+        if (error && error.code === 11000 && error.keyPattern && error.keyPattern.slug) {
+            return res.status(409).json({
+                success: false,
+                code: 'SLUG_ALREADY_EXISTS',
+                message: 'This product URL is already in use. Choose a different slug.',
+            });
+        }
         if (error && error.statusCode) {
             return res.status(error.statusCode).json({ success: false, message: error.message });
         }
@@ -532,8 +720,15 @@ router.delete('/:id', authenticateAdmin, requireAdmin, async (req, res) => {
     try {
         const db = mongoose.connection.db;
         const { ObjectId } = require('mongodb');
+        const existing = await db.collection('products').findOne(
+            { _id: new ObjectId(req.params.id) },
+            { projection: { slug: 1 } },
+        );
         const result = await db.collection('products').deleteOne({ _id: new ObjectId(req.params.id) });
         if (!result.deletedCount) return res.status(404).json({ success: false, message: 'Product not found' });
+        // Keep the slug reserved so a deleted product's URL can never be
+        // recycled by an unrelated product (SEO stability).
+        await slugService.tombstoneSlug(db, req.params.id, existing?.slug);
         cacheService.invalidateAll();
         res.json({ ok: true });
     } catch (error) {
